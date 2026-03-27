@@ -172,9 +172,13 @@ impl proto::Northbound for NorthboundService {
             .map_err(|_| Status::invalid_argument("Invalid data encoding"))?;
         let with_defaults = grpc_request.with_defaults;
         let path = (!grpc_request.path.is_empty()).then_some(grpc_request.path);
+        let max_depth = grpc_request.max_depth;
+        let exclude = grpc_request.exclude;
         let nb_request = api::client::Request::Get(api::client::GetRequest {
             data_type,
             path,
+            max_depth,
+            exclude,
             responder: responder_tx,
         });
         self.request_tx.send(nb_request).await.unwrap();

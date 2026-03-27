@@ -4,6 +4,7 @@
 // SPDX-License-Identifier: MIT
 //
 
+use std::collections::HashSet;
 use std::fmt::Write;
 
 use holo_utils::yang::SchemaNodeExt;
@@ -65,6 +66,12 @@ pub struct YangContainerOps<P: Provider> {
     pub new: YangContainerNewFn<P>,
 }
 
+// Filter options for Get requests.
+pub(crate) struct GetFilter {
+    pub max_depth: u32,
+    pub exclude: HashSet<String>,
+}
+
 // Type aliases.
 type YangListIterFn<P: Provider> =
     for<'a> fn(&'a P, &P::ListEntry<'a>) -> Option<ListIterator<'a, P>>;
@@ -85,21 +92,28 @@ fn iterate_node<'a, P>(
     list_entry: &P::ListEntry<'a>,
     relay_list: &mut Vec<GetReceiver>,
     first: bool,
+    filter: &GetFilter,
+    depth: u32,
 ) -> Result<(), Error>
 where
     P: Provider,
 {
     match snode.kind() {
         SchemaNodeKind::List => {
-            iterate_list(provider, dnode, snode, list_entry, relay_list)?;
+            iterate_list(
+                provider, dnode, snode, list_entry, relay_list, filter, depth,
+            )?;
         }
         SchemaNodeKind::Container => {
             iterate_container(
-                provider, dnode, snode, list_entry, relay_list, first,
+                provider, dnode, snode, list_entry, relay_list, first, filter,
+                depth,
             )?;
         }
         SchemaNodeKind::Choice | SchemaNodeKind::Case => {
-            iterate_children(provider, dnode, snode, list_entry, relay_list)?;
+            iterate_children(
+                provider, dnode, snode, list_entry, relay_list, filter, depth,
+            )?;
         }
         _ => (),
     }
@@ -113,6 +127,8 @@ fn iterate_list<'a, P>(
     snode: &SchemaNode<'_>,
     parent_list_entry: &P::ListEntry<'a>,
     relay_list: &mut Vec<GetReceiver>,
+    filter: &GetFilter,
+    depth: u32,
 ) -> Result<(), Error>
 where
     P: Provider,
@@ -142,6 +158,8 @@ where
                 snode,
                 &list_entry,
                 relay_list,
+                filter,
+                depth,
             )?;
         }
     }
@@ -156,6 +174,8 @@ fn iterate_container<'a, P>(
     list_entry: &P::ListEntry<'a>,
     relay_list: &mut Vec<GetReceiver>,
     first: bool,
+    filter: &GetFilter,
+    depth: u32,
 ) -> Result<(), Error>
 where
     P: Provider,
@@ -180,7 +200,7 @@ where
         obj.into_data_node(dnode);
     }
 
-    iterate_children(provider, dnode, snode, list_entry, relay_list)?;
+    iterate_children(provider, dnode, snode, list_entry, relay_list, filter, depth)?;
 
     // Remove the container node if it was added and remains empty.
     if !first && dnode.children().next().is_none() {
@@ -196,10 +216,17 @@ fn iterate_children<'a, P>(
     snode: &SchemaNode<'_>,
     list_entry: &P::ListEntry<'a>,
     relay_list: &mut Vec<GetReceiver>,
+    filter: &GetFilter,
+    depth: u32,
 ) -> Result<(), Error>
 where
     P: Provider,
 {
+    // Depth check: stop recursion if max_depth reached.
+    if filter.max_depth > 0 && depth >= filter.max_depth {
+        return Ok(());
+    }
+
     for snode in snode.children().filter(|snode| {
         matches!(
             snode.kind(),
@@ -209,18 +236,26 @@ where
                 | SchemaNodeKind::Case
         )
     }) {
+        // Exclusion check: skip excluded subtrees.
+        if filter.exclude.contains(&snode.data_path()) {
+            continue;
+        }
+
         // Check if the provider implements the child node.
         let module = snode.module();
         if let Some(child_nb_tx) = list_entry.child_task(module.name()) {
             // Prepare request to child task.
             let path =
                 format!("{}/{}:{}", dnode.path(), module.name(), snode.name());
-            let relay_rx = relay_request(child_nb_tx, path);
+            let relay_rx = relay_request(child_nb_tx, path, filter, depth);
             relay_list.push(relay_rx);
             continue;
         }
 
-        iterate_node(provider, dnode, &snode, list_entry, relay_list, false)?;
+        iterate_node(
+            provider, dnode, &snode, list_entry, relay_list, false, filter,
+            depth + 1,
+        )?;
     }
 
     Ok(())
@@ -276,10 +311,21 @@ where
     list_entry
 }
 
-fn relay_request(nb_tx: NbDaemonSender, path: String) -> GetReceiver {
+fn relay_request(
+    nb_tx: NbDaemonSender,
+    path: String,
+    filter: &GetFilter,
+    current_depth: u32,
+) -> GetReceiver {
     let (responder_tx, responder_rx) = oneshot::channel();
     let request = api::daemon::GetRequest {
         path: Some(path),
+        max_depth: if filter.max_depth > 0 {
+            filter.max_depth.saturating_sub(current_depth)
+        } else {
+            0
+        },
+        exclude: filter.exclude.iter().cloned().collect(),
         responder: Some(responder_tx),
     };
     tokio::task::spawn(async move {
@@ -296,6 +342,8 @@ fn relay_request(nb_tx: NbDaemonSender, path: String) -> GetReceiver {
 pub(crate) fn process_get<P>(
     provider: &P,
     path: Option<String>,
+    max_depth: u32,
+    exclude: Vec<String>,
 ) -> Result<api::daemon::GetResponse, Error>
 where
     P: Provider,
@@ -314,11 +362,27 @@ where
     let list_entry = lookup_list_entry(provider, &dnode);
     let snode = yang_ctx.find_path(&dnode.schema().data_path()).unwrap();
 
+    // Resolve relative exclude paths to absolute YANG data paths.
+    let base_path = snode.data_path();
+    let exclude_set: HashSet<String> = exclude
+        .iter()
+        .filter_map(|rel| {
+            yang_ctx
+                .find_path(&format!("{}/{}", base_path, rel))
+                .ok()
+                .map(|s| s.data_path())
+        })
+        .collect();
+    let filter = GetFilter {
+        max_depth,
+        exclude: exclude_set,
+    };
+
     // Check if the provider implements the child node.
     let module = snode.module();
     if let Some(child_nb_tx) = list_entry.child_task(module.name()) {
         // Prepare request to child task.
-        let relay_rx = relay_request(child_nb_tx, path);
+        let relay_rx = relay_request(child_nb_tx, path, &filter, 0);
         relay_list.push(relay_rx);
     } else {
         // If a list entry was given, iterate over that list entry.
@@ -329,6 +393,8 @@ where
                 &snode,
                 &list_entry,
                 &mut relay_list,
+                &filter,
+                0,
             )?;
         } else {
             iterate_node(
@@ -338,6 +404,8 @@ where
                 &list_entry,
                 &mut relay_list,
                 true,
+                &filter,
+                0,
             )?;
         }
     }

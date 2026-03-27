@@ -38,6 +38,8 @@ pub mod client {
     pub struct GetRequest {
         pub data_type: DataType,
         pub path: Option<String>,
+        pub max_depth: u32,
+        pub exclude: Vec<String>,
         pub responder: Responder<Result<GetResponse>>,
     }
 

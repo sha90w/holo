@@ -151,7 +151,12 @@ pub fn process_northbound_msg<Provider>(
             }
         }
         api::daemon::Request::Get(request) => {
-            let response = state::process_get(provider, request.path);
+            let response = state::process_get(
+                provider,
+                request.path,
+                request.max_depth,
+                request.exclude,
+            );
             if let Some(responder) = request.responder {
                 responder.send(response).unwrap();
             }

@@ -129,6 +129,12 @@ message GetRequest {
 
   // Requested YANG path.
   string path = 4;
+
+  // Maximum depth of the YANG tree traversal (0 = unlimited).
+  uint32 max_depth = 5;
+
+  // Relative YANG paths to exclude from the response.
+  repeated string exclude = 6;
 }
 
 message GetResponse {

@@ -169,7 +169,12 @@ impl Northbound {
         match request {
             capi::client::Request::Get(request) => {
                 let response = self
-                    .process_client_get(request.data_type, request.path)
+                    .process_client_get(
+                        request.data_type,
+                        request.path,
+                        request.max_depth,
+                        request.exclude,
+                    )
                     .await;
                 let _ = request.responder.send(response);
             }
@@ -219,13 +224,18 @@ impl Northbound {
         &self,
         data_type: capi::DataType,
         path: Option<String>,
+        max_depth: u32,
+        exclude: Vec<String>,
     ) -> Result<capi::client::GetResponse> {
         let path = path.as_deref();
         let dtree = match data_type {
-            capi::DataType::State => self.get_state(path).await?,
+            capi::DataType::State => {
+                self.get_state(path, max_depth, &exclude).await?
+            }
             capi::DataType::Configuration => self.get_configuration(path)?,
             capi::DataType::All => {
-                let mut dtree_state = self.get_state(path).await?;
+                let mut dtree_state =
+                    self.get_state(path, max_depth, &exclude).await?;
                 let dtree_config = self.get_configuration(path)?;
                 dtree_state
                     .merge(&dtree_config)
@@ -522,7 +532,12 @@ impl Northbound {
 
     // Gets dynamically generated operational data for the provided path. The
     // request might span multiple data providers.
-    async fn get_state(&self, path: Option<&str>) -> Result<DataTree<'static>> {
+    async fn get_state(
+        &self,
+        path: Option<&str>,
+        max_depth: u32,
+        exclude: &[String],
+    ) -> Result<DataTree<'static>> {
         let yang_ctx = YANG_CTX.get().unwrap();
         let mut dtree = DataTree::new(yang_ctx);
 
@@ -532,6 +547,8 @@ impl Northbound {
             let request =
                 papi::daemon::Request::Get(papi::daemon::GetRequest {
                     path: path.map(String::from),
+                    max_depth,
+                    exclude: exclude.to_vec(),
                     responder: Some(responder_tx),
                 });
             daemon_tx.send(request).await.unwrap();
