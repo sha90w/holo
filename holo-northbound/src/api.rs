@@ -59,6 +59,10 @@ pub mod daemon {
     #[derive(Debug, Deserialize, Serialize)]
     pub struct GetRequest {
         pub path: Option<String>,
+        #[serde(default)]
+        pub max_depth: u32,
+        #[serde(default)]
+        pub exclude: Vec<String>,
         #[serde(skip)]
         pub responder: Option<Responder<Result<GetResponse, Error>>>,
     }
