@@ -13,6 +13,8 @@ use tokio::sync::oneshot;
 use yang4::data::{DataNodeRef, DataTree};
 use yang4::schema::{SchemaNode, SchemaNodeKind};
 
+use tracing::warn;
+
 use crate::error::Error;
 use crate::{NbDaemonSender, ProviderBase, YangObject, api};
 
@@ -383,6 +385,7 @@ where
         max_depth,
         exclude: exclude_set,
     };
+    warn!(%path, max_depth, exclude_count = filter.exclude.len(), "process_get filter");
 
     // Check if the provider implements the child node.
     let module = snode.module();
