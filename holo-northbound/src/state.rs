@@ -238,8 +238,8 @@ where
                 | SchemaNodeKind::Case
         )
     }) {
-        // Exclusion check: skip excluded subtrees.
-        if filter.exclude.contains(&snode.data_path()) {
+        // Exclusion check: skip excluded subtrees by node name.
+        if filter.exclude.contains(snode.name()) {
             continue;
         }
 
@@ -370,17 +370,8 @@ where
     let list_entry = lookup_list_entry(provider, &dnode);
     let snode = yang_ctx.find_path(&dnode.schema().data_path()).unwrap();
 
-    // Resolve relative exclude paths to absolute YANG data paths.
-    let base_path = snode.data_path();
-    let exclude_set: HashSet<String> = exclude
-        .iter()
-        .filter_map(|rel| {
-            yang_ctx
-                .find_path(&format!("{}/{}", base_path, rel))
-                .ok()
-                .map(|s| s.data_path())
-        })
-        .collect();
+    // Build filter from exclude node names.
+    let exclude_set: HashSet<String> = exclude.into_iter().collect();
     let filter = GetFilter {
         max_depth,
         exclude: exclude_set,
