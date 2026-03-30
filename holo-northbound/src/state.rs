@@ -4,7 +4,6 @@
 // SPDX-License-Identifier: MIT
 //
 
-use std::collections::HashSet;
 use std::fmt::Write;
 
 use holo_utils::yang::SchemaNodeExt;
@@ -12,8 +11,6 @@ use holo_yang::YANG_CTX;
 use tokio::sync::oneshot;
 use yang4::data::{DataNodeRef, DataTree};
 use yang4::schema::{SchemaNode, SchemaNodeKind};
-
-use tracing::warn;
 
 use crate::error::Error;
 use crate::{NbDaemonSender, ProviderBase, YangObject, api};
@@ -71,7 +68,7 @@ pub struct YangContainerOps<P: Provider> {
 // Filter options for Get requests.
 pub(crate) struct GetFilter {
     pub max_depth: u32,
-    pub exclude: HashSet<String>,
+    pub exclude: Vec<String>,
 }
 
 // Type aliases.
@@ -239,7 +236,7 @@ where
         )
     }) {
         // Exclusion check: skip excluded subtrees by node name.
-        if filter.exclude.contains(snode.name()) {
+        if filter.exclude.iter().any(|s| s == snode.name()) {
             continue;
         }
 
@@ -333,7 +330,7 @@ fn relay_request(
         } else {
             0
         },
-        exclude: filter.exclude.iter().cloned().collect(),
+        exclude: filter.exclude.clone(),
         responder: Some(responder_tx),
     };
     tokio::task::spawn(async move {
@@ -370,13 +367,11 @@ where
     let list_entry = lookup_list_entry(provider, &dnode);
     let snode = yang_ctx.find_path(&dnode.schema().data_path()).unwrap();
 
-    // Build filter from exclude node names.
-    let exclude_set: HashSet<String> = exclude.into_iter().collect();
+    // Build filter options.
     let filter = GetFilter {
         max_depth,
-        exclude: exclude_set,
+        exclude,
     };
-    warn!(%path, max_depth, exclude_count = filter.exclude.len(), "process_get filter");
 
     // Check if the provider implements the child node.
     let module = snode.module();

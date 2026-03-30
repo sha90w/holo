@@ -232,6 +232,9 @@ impl Northbound {
             capi::DataType::State => {
                 self.get_state(path, max_depth, &exclude).await?
             }
+            // Depth and exclude filters apply only to state data, which is
+            // built dynamically; configuration is returned as-is from the
+            // running datastore.
             capi::DataType::Configuration => self.get_configuration(path)?,
             capi::DataType::All => {
                 let mut dtree_state =
