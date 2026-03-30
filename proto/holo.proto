@@ -136,7 +136,8 @@ message GetRequest {
   uint32 max_depth = 5;
 
   // YANG node names to exclude from the response (matched at any depth).
-  // Applies only to state data.
+  // Use "name" to match by node name or "module:name" for module-qualified
+  // matching (e.g. "rib" matches all, "ietf-bgp:rib" matches only BGP's).
   repeated string exclude = 6;
 }
 

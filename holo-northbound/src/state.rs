@@ -235,13 +235,20 @@ where
                 | SchemaNodeKind::Case
         )
     }) {
-        // Exclusion check: skip excluded subtrees by node name.
-        if filter.exclude.iter().any(|s| s == snode.name()) {
+        // Exclusion check: skip excluded subtrees.
+        // Supports "rib" (match by name) and "ietf-bgp:rib" (match by
+        // module and name).
+        let module = snode.module();
+        let node_name = snode.name();
+        let module_name = module.name();
+        if filter.exclude.iter().any(|e| match e.split_once(':') {
+            Some((m, n)) => m == module_name && n == node_name,
+            None => e.as_str() == node_name,
+        }) {
             continue;
         }
 
         // Check if the provider implements the child node.
-        let module = snode.module();
         if let Some(child_nb_tx) = list_entry.child_task(module.name()) {
             // Prepare request to child task.
             let path =
