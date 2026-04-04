@@ -26,6 +26,8 @@ pub mod daemon {
         Commit(CommitRequest),
         // Request to get state data.
         Get(GetRequest),
+        // Request to stream state data for a specific list.
+        StreamGet(StreamGetRequest),
         // Request to invoke a YANG RPC or Action.
         Rpc(RpcRequest),
     }
@@ -70,6 +72,17 @@ pub mod daemon {
     #[derive(Debug)]
     pub struct GetResponse {
         pub data: DataTree<'static>,
+    }
+
+    #[derive(Debug, Deserialize, Serialize)]
+    pub struct StreamGetRequest {
+        pub path: String,
+        #[serde(default)]
+        pub max_depth: u32,
+        #[serde(default)]
+        pub exclude: Vec<String>,
+        #[serde(skip)]
+        pub tx: Option<tokio::sync::mpsc::Sender<DataTree<'static>>>,
     }
 
     #[derive(Debug, Deserialize, Serialize)]

@@ -23,6 +23,7 @@ pub enum Error {
     TransactionPreparation(northbound::error::Error),
     TransactionIdNotFound(u32),
     Get(northbound::error::Error),
+    StreamGetNotList,
 }
 
 // ===== impl Error =====
@@ -50,6 +51,9 @@ impl std::fmt::Display for Error {
             }
             Error::Get(err) => {
                 write!(f, "Failed to get operational data: {err}")
+            }
+            Error::StreamGetNotList => {
+                write!(f, "StreamGet path must target a YANG list node")
             }
         }
     }

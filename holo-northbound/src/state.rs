@@ -40,6 +40,8 @@ pub trait YangContainer<'a, P: Provider> {
 
 // Implemented by all auto-generated YANG list structs that hold state data.
 pub trait YangList<'a, P: Provider> {
+    const STREAMABLE: bool = false;
+
     fn iter(
         provider: &'a P,
         list_entry: &P::ListEntry<'a>,
@@ -59,6 +61,7 @@ pub struct YangOps<P: Provider> {
 pub struct YangListOps<P: Provider> {
     pub iter: YangListIterFn<P>,
     pub new: YangListNewFn<P>,
+    pub streamable: bool,
 }
 
 pub struct YangContainerOps<P: Provider> {
@@ -235,13 +238,16 @@ where
                 | SchemaNodeKind::Case
         )
     }) {
-        // Exclusion check: skip excluded subtrees.
-        // Supports "rib" (match by name) and "ietf-bgp:rib" (match by
-        // module and name).
+        // Skip exclude check for Choice/Case — they are transparent
+        // schema wrappers; their real data children will be checked
+        // individually on the next recursion.
         let module = snode.module();
         let node_name = snode.name();
         let module_name = module.name();
-        if filter.exclude.iter().any(|e| match e.split_once(':') {
+        if !matches!(
+            snode.kind(),
+            SchemaNodeKind::Choice | SchemaNodeKind::Case
+        ) && filter.exclude.iter().any(|e| match e.split_once(':') {
             Some((m, n)) => m == module_name && n == node_name,
             None => e.as_str() == node_name,
         }) {
@@ -332,8 +338,10 @@ fn relay_request(
     let (responder_tx, responder_rx) = oneshot::channel();
     let request = api::daemon::GetRequest {
         path: Some(path),
+        // Clamp to 1 so that saturating to 0 never flips the meaning
+        // from "stop" to "unlimited" (0 = no limit in the protocol).
         max_depth: if filter.max_depth > 0 {
-            filter.max_depth.saturating_sub(current_depth)
+            filter.max_depth.saturating_sub(current_depth).max(1)
         } else {
             0
         },
@@ -350,6 +358,113 @@ fn relay_request(
 }
 
 // ===== global functions =====
+
+pub(crate) fn process_stream_get<P>(
+    provider: &P,
+    path: String,
+    max_depth: u32,
+    exclude: Vec<String>,
+    tx: Option<tokio::sync::mpsc::Sender<DataTree<'static>>>,
+) where
+    P: Provider,
+{
+    let Some(tx) = tx else { return };
+    let yang_ctx = YANG_CTX.get().unwrap();
+
+    // Parse path and resolve schema node.
+    let mut dtree_tmp = DataTree::new(yang_ctx);
+    let Ok(Some(dnode)) = dtree_tmp.new_path(&path, None, false) else {
+        return;
+    };
+    let snode = yang_ctx.find_path(&dnode.schema().data_path()).unwrap();
+
+    // Must be a list node.
+    if snode.kind() != SchemaNodeKind::List {
+        return;
+    }
+
+    let snode_path = snode.data_path();
+
+    // Check if this provider owns this list AND if it's streamable.
+    if let Some(list_ops) = P::YANG_OPS.list.get(&snode_path) {
+        if !list_ops.streamable {
+            return;
+        }
+
+        // Resolve parent list entry context.
+        let list_entry = lookup_list_entry(provider, &dnode);
+
+        // Build filter from client-provided parameters.
+        let filter = GetFilter {
+            max_depth,
+            exclude,
+        };
+
+        // Iterate and stream entries.
+        if let Some(list_iter) = (list_ops.iter)(provider, &list_entry) {
+            for entry in list_iter {
+                let obj = (list_ops.new)(provider, &entry);
+                let keys = obj.list_keys();
+
+                // Build mini DataTree for this single entry.
+                let mut entry_dtree = DataTree::new(yang_ctx);
+                let entry_path = format!("{}{}", path, keys);
+                let Ok(Some(mut entry_dnode)) =
+                    entry_dtree.new_path(&entry_path, None, false)
+                else {
+                    continue;
+                };
+
+                // Populate entry fields.
+                obj.into_data_node(&mut entry_dnode);
+
+                // Populate children (containers, nested lists) with filter.
+                let mut relay_list = vec![];
+                let _ = iterate_children(
+                    provider,
+                    &mut entry_dnode,
+                    &snode,
+                    &entry,
+                    &mut relay_list,
+                    &filter,
+                    0,
+                );
+
+                // Collect child provider relay responses.
+                for relay_rx in relay_list.drain(..) {
+                    if let Ok(Ok(response)) = relay_rx.blocking_recv() {
+                        let _ = entry_dtree.merge(&response.data);
+                    }
+                }
+
+                // Send entry. Stop if receiver dropped (client
+                // disconnected).
+                if tx.blocking_send(entry_dtree).is_err() {
+                    return;
+                }
+            }
+        }
+    } else {
+        // List not in this provider — check if child provider owns it.
+        // Walk path to find relay point and forward tx.
+        let list_entry = lookup_list_entry(provider, &dnode);
+        let module = snode.module();
+        if let Some(child_nb_tx) = list_entry.child_task(module.name()) {
+            let request = api::daemon::StreamGetRequest {
+                path,
+                max_depth,
+                exclude,
+                tx: Some(tx),
+            };
+            tokio::task::spawn(async move {
+                child_nb_tx
+                    .send(api::daemon::Request::StreamGet(request))
+                    .await
+                    .unwrap();
+            });
+        }
+    }
+}
 
 pub(crate) fn process_get<P>(
     provider: &P,

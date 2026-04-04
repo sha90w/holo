@@ -21,6 +21,8 @@ pub mod client {
     pub enum Request {
         // Request to get data (configuration, state or both).
         Get(GetRequest),
+        // Request to stream state data for a specific list.
+        StreamGet(StreamGetRequest),
         // Request to validate a candidate configuration.
         Validate(ValidateRequest),
         // Request to change the running configuration.
@@ -46,6 +48,19 @@ pub mod client {
     #[derive(Debug)]
     pub struct GetResponse {
         pub dtree: DataTree<'static>,
+    }
+
+    #[derive(Debug)]
+    pub struct StreamGetRequest {
+        pub path: String,
+        pub max_depth: u32,
+        pub exclude: Vec<String>,
+        pub responder: Responder<Result<StreamGetResponse>>,
+    }
+
+    #[derive(Debug)]
+    pub struct StreamGetResponse {
+        pub rx: tokio::sync::mpsc::Receiver<DataTree<'static>>,
     }
 
     #[derive(Debug)]

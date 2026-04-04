@@ -35,6 +35,9 @@ service Northbound {
   // Retrieve configuration data, state data or both from the target.
   rpc Get(GetRequest) returns (GetResponse) {}
 
+  // Stream large YANG list entries one at a time.
+  rpc StreamGet(GetRequest) returns (stream GetResponse) {}
+
   // Validate the configuration without committing it.
   rpc Validate(ValidateRequest) returns (ValidateResponse) {}
 

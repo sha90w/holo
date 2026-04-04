@@ -28,6 +28,7 @@ use yang4::data::{
     Data, DataDiffFlags, DataFormat, DataPrinterFlags, DataTree,
     DataValidationFlags,
 };
+use yang4::schema::SchemaNodeKind;
 use {holo_northbound as northbound, holo_yang as yang};
 
 use crate::config::Config;
@@ -178,6 +179,16 @@ impl Northbound {
                     .await;
                 let _ = request.responder.send(response);
             }
+            capi::client::Request::StreamGet(request) => {
+                let response = self
+                    .process_client_stream_get(
+                        request.path,
+                        request.max_depth,
+                        request.exclude,
+                    )
+                    .await;
+                let _ = request.responder.send(response);
+            }
             capi::client::Request::Validate(request) => {
                 let response =
                     self.process_client_validate(request.config).await;
@@ -248,6 +259,53 @@ impl Northbound {
         };
 
         Ok(capi::client::GetResponse { dtree })
+    }
+
+    // Processes a `StreamGet` message received from an external client.
+    // Streams individual list entries instead of building the full tree.
+    async fn process_client_stream_get(
+        &self,
+        path: String,
+        max_depth: u32,
+        exclude: Vec<String>,
+    ) -> Result<capi::client::StreamGetResponse> {
+        // Validate path and ensure it targets a list node.
+        let yang_ctx = YANG_CTX.get().unwrap();
+        let mut dtree_tmp = DataTree::new(yang_ctx);
+        let dnode = dtree_tmp
+            .new_path(&path, None, false)
+            .map_err(Error::YangInvalidPath)?
+            .unwrap();
+        let snode =
+            yang_ctx.find_path(&dnode.schema().data_path()).unwrap();
+        if snode.kind() != SchemaNodeKind::List {
+            return Err(Error::StreamGetNotList);
+        }
+
+        // Buffer size 32: allows producer to stay ahead of gRPC serialization
+        // without unbounded memory growth. Each buffered item is one list
+        // entry's DataTree — typically small (single route with attributes).
+        let (tx, rx) =
+            tokio::sync::mpsc::channel::<DataTree<'static>>(32);
+
+        // Broadcast to all providers (same pattern as get_state).
+        // Providers that don't own the target path drop their tx clone
+        // immediately, which is harmless.
+        for daemon_tx in self.providers.iter() {
+            let request = papi::daemon::Request::StreamGet(
+                papi::daemon::StreamGetRequest {
+                    path: path.clone(),
+                    max_depth,
+                    exclude: exclude.clone(),
+                    tx: Some(tx.clone()),
+                },
+            );
+            daemon_tx.send(request).await.unwrap();
+        }
+        // Drop our tx clone so channel closes when all providers finish.
+        drop(tx);
+
+        Ok(capi::client::StreamGetResponse { rx })
     }
 
     // Processes a `Validate` message received from an external client.

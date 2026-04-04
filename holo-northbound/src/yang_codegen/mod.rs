@@ -226,8 +226,8 @@ fn generate_yang_ops(
         )?;
         writeln!(
             output,
-            "      YangListOps {{ iter: |p, le| {}::iter(p, le), new: |p, le| Box::new({}::new(p, le)) }}",
-            list, list,
+            "      YangListOps {{ iter: |p, le| {}::iter(p, le), new: |p, le| Box::new({}::new(p, le)), streamable: <{} as YangList<'_, Provider>>::STREAMABLE }}",
+            list, list, list,
         )?;
         writeln!(output, "    }},")?;
     }
