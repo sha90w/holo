@@ -463,11 +463,11 @@ pub(crate) fn process_stream_get<P>(
 
                 // Send entry. Stop if receiver dropped (client
                 // disconnected).
-                let send_err = tokio::task::block_in_place(|| {
+                if tokio::task::block_in_place(|| {
                     tx.blocking_send(entry_dtree)
                 })
-                .is_err();
-                if send_err {
+                .is_err()
+                {
                     return;
                 }
             }
