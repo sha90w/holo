@@ -377,23 +377,6 @@ where
     let (nb_daemon_tx, nb_daemon_rx) = mpsc::channel(4);
     let nb_provider_tx = nb_provider_tx.clone();
     let ibus_tx = IbusChannelsTx::with_subscriber(ibus_tx, ibus_instance_tx);
-    let fut = async move {
-        let span = P::debug_span(&name);
-        let _span_guard = span.enter();
-        run::<P>(
-            name,
-            nb_provider_tx,
-            nb_daemon_rx,
-            ibus_tx,
-            ibus_instance_rx,
-            agg_channels,
-            #[cfg(feature = "testing")]
-            test_rx,
-            shared,
-        )
-        .await;
-    };
-
     // In testing, protocol instances are spawned as async tasks so they run
     // under Tokio's single-threaded cooperative scheduler. This ensures
     // deterministic ordering of message send/receive operations.
@@ -403,12 +386,39 @@ where
     // other tasks on the cooperative scheduler, protocol instances are spawned
     // as blocking tasks backed by OS threads, relying on the OS for preemptive
     // scheduling.
+    //
+    // The future is created inside the closure/task so that it doesn't need
+    // to be Send — block_on runs it on the same thread.
     #[cfg(not(feature = "testing"))]
-    tokio::task::spawn_blocking(|| {
-        tokio::runtime::Handle::current().block_on(fut)
+    tokio::task::spawn_blocking(move || {
+        let span = P::debug_span(&name);
+        let _span_guard = span.enter();
+        tokio::runtime::Handle::current().block_on(run::<P>(
+            name,
+            nb_provider_tx,
+            nb_daemon_rx,
+            ibus_tx,
+            ibus_instance_rx,
+            agg_channels,
+            shared,
+        ));
     });
     #[cfg(feature = "testing")]
-    tokio::spawn(fut);
+    tokio::spawn(async move {
+        let span = P::debug_span(&name);
+        let _span_guard = span.enter();
+        run::<P>(
+            name,
+            nb_provider_tx,
+            nb_daemon_rx,
+            ibus_tx,
+            ibus_instance_rx,
+            agg_channels,
+            test_rx,
+            shared,
+        )
+        .await;
+    });
 
     nb_daemon_tx
 }
