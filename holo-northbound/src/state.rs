@@ -481,7 +481,7 @@ pub(crate) async fn process_stream_get<P>(
     }
 }
 
-pub(crate) fn process_get<P>(
+pub(crate) async fn process_get<P>(
     provider: &P,
     path: Option<String>,
     max_depth: u32,
@@ -544,7 +544,7 @@ where
 
     // Collect responses from all relayed requests.
     for relay_rx in relay_list {
-        let response = relay_rx.blocking_recv().unwrap()?;
+        let response = relay_rx.await.unwrap()?;
         dtree
             .merge(&response.data)
             .map_err(Error::YangInvalidData)?;

@@ -547,7 +547,7 @@ where
     Ok(())
 }
 
-fn process_commit_relayed<P>(
+async fn process_commit_relayed<P>(
     provider: &P,
     phase: CommitPhase,
     old_config: &Arc<DataTree<'static>>,
@@ -568,11 +568,12 @@ where
             responder: Some(responder_tx),
         };
         nb_tx
-            .blocking_send(api::daemon::Request::Commit(relayed_commit))
+            .send(api::daemon::Request::Commit(relayed_commit))
+            .await
             .unwrap();
 
         // Receive response.
-        let _ = responder_rx.blocking_recv().unwrap()?;
+        let _ = responder_rx.await.unwrap()?;
     }
 
     Ok(())
@@ -699,7 +700,7 @@ pub fn validate(
     Ok(())
 }
 
-pub(crate) fn process_commit<P>(
+pub(crate) async fn process_commit<P>(
     provider: &mut P,
     phase: CommitPhase,
     old_config: Arc<DataTree<'static>>,
@@ -733,7 +734,8 @@ where
         &old_config,
         &new_config,
         relayed_changes,
-    )?;
+    )
+    .await?;
 
     Ok(api::daemon::CommitResponse {})
 }

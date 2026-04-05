@@ -145,7 +145,8 @@ pub async fn process_northbound_msg<Provider>(
                 request.new_config,
                 request.changes,
                 resources,
-            );
+            )
+            .await;
             if let Some(responder) = request.responder {
                 responder.send(response).unwrap();
             }
@@ -156,7 +157,8 @@ pub async fn process_northbound_msg<Provider>(
                 request.path,
                 request.max_depth,
                 request.exclude,
-            );
+            )
+            .await;
             if let Some(responder) = request.responder {
                 responder.send(response).unwrap();
             }
@@ -172,7 +174,7 @@ pub async fn process_northbound_msg<Provider>(
             .await;
         }
         api::daemon::Request::Rpc(request) => {
-            let response = rpc::process_rpc(provider, request.data);
+            let response = rpc::process_rpc(provider, request.data).await;
             if let Some(responder) = request.responder {
                 responder.send(response).unwrap();
             }
