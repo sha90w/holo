@@ -217,6 +217,8 @@ fn generate_yang_ops(
     {
         let path = snode.path(SchemaPathFormat::DATA);
         let list = snode_rust_name(&snode, Case::Pascal);
+        let anon_lifetime =
+            if snode_needs_lifetime(&snode) { "<'_>" } else { "" };
         writeln!(output, "    \"{}\" => {{", path)?;
         writeln!(
             output,
@@ -226,8 +228,8 @@ fn generate_yang_ops(
         )?;
         writeln!(
             output,
-            "      YangListOps {{ iter: |p, le| {}::iter(p, le), new: |p, le| Box::new({}::new(p, le)), streamable: <{} as YangList<'_, Provider>>::STREAMABLE }}",
-            list, list, list,
+            "      YangListOps {{ iter: |p, le| {}::iter(p, le), new: |p, le| Box::new({}::new(p, le)), streamable: <{}{} as YangList<'_, Provider>>::STREAMABLE }}",
+            list, list, list, anon_lifetime,
         )?;
         writeln!(output, "    }},")?;
     }
@@ -312,6 +314,23 @@ pub const YANG_OPS_RPC: rpc::YangOps<Provider> = rpc::YangOps {{
     )?;
 
     Ok(())
+}
+
+// Returns true if the generated struct for this schema node requires a
+// lifetime parameter (i.e. it contains leaf-list fields or non-builtin leaf
+// types that map to borrowed Rust types).
+pub(crate) fn snode_needs_lifetime(snode: &SchemaNode<'_>) -> bool {
+    let mut fields = Vec::new();
+    for child in snode.children() {
+        struct_builder::StructBuilder::extract_fields(child, &mut fields);
+    }
+    snode.is_within_notification()
+        || fields.iter().any(|snode| {
+            snode.kind() == SchemaNodeKind::LeafList
+                || !snode
+                    .leaf_type()
+                    .is_some_and(|leaf_type| types::leaf_type_is_builtin(&leaf_type))
+        })
 }
 
 fn snode_contains_leaf_or_leaflist(snode: &SchemaNode<'_>) -> bool {

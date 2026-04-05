@@ -78,17 +78,12 @@ impl<'a> StructBuilder<'a> {
         let indent3 = " ".repeat((self.level + 3) * 2);
         let indent4 = " ".repeat((self.level + 4) * 2);
         let indent5 = " ".repeat((self.level + 5) * 2);
-        let (lifetime, anon_lifetime) = if self.snode.is_within_notification()
-            || self.fields.iter().any(|snode| {
-                snode.kind() == SchemaNodeKind::LeafList
-                    || !snode.leaf_type().is_some_and(|leaf_type| {
-                        leaf_type_is_builtin(&leaf_type)
-                    })
-            }) {
-            ("<'a>", "<'_>")
-        } else {
-            ("", "")
-        };
+        let (lifetime, anon_lifetime) =
+            if crate::yang_codegen::snode_needs_lifetime(&self.snode) {
+                ("<'a>", "<'_>")
+            } else {
+                ("", "")
+            };
 
         // Struct definition.
         let name = snode_rust_name(&self.snode, Case::Pascal);
