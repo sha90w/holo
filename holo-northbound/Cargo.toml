@@ -11,6 +11,7 @@ bitflags.workspace = true
 check_keyword.workspace = true
 convert_case.workspace = true
 derive-new.workspace = true
+futures.workspace = true
 itertools.workspace = true
 phf.workspace = true
 serde.workspace = true

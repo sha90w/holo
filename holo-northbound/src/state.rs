@@ -449,24 +449,23 @@ pub(crate) fn process_stream_get<P>(
                 );
 
                 // Collect child provider relay responses.
-                // Use block_in_place so this works both on async
-                // worker threads (protocol instances) and on
-                // dedicated blocking threads (simple providers).
+                // Use futures::executor::block_on to drive the
+                // async recv/send without interacting with tokio's
+                // runtime context — this works on both async worker
+                // threads and spawn_blocking + block_on threads
+                // (protocol instances like BGP).
                 for relay_rx in relay_list.drain(..) {
-                    let resp = tokio::task::block_in_place(|| {
-                        relay_rx.blocking_recv()
-                    });
-                    if let Ok(Ok(response)) = resp {
+                    if let Ok(Ok(response)) =
+                        futures::executor::block_on(relay_rx)
+                    {
                         let _ = entry_dtree.merge(&response.data);
                     }
                 }
 
                 // Send entry. Stop if receiver dropped (client
                 // disconnected).
-                if tokio::task::block_in_place(|| {
-                    tx.blocking_send(entry_dtree)
-                })
-                .is_err()
+                if futures::executor::block_on(tx.send(entry_dtree))
+                    .is_err()
                 {
                     return;
                 }
