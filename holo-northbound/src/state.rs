@@ -371,12 +371,29 @@ pub(crate) fn process_stream_get<P>(
     let Some(tx) = tx else { return };
     let yang_ctx = YANG_CTX.get().unwrap();
 
-    // Parse path and resolve schema node.
-    let mut dtree_tmp = DataTree::new(yang_ctx);
-    let Ok(Some(dnode)) = dtree_tmp.new_path(&path, None, false) else {
+    // Split path into parent + terminal list node name.
+    // StreamGet streams all entries, so the terminal must not carry
+    // key predicates.
+    let Some(last_slash) = path.rfind('/') else {
         return;
     };
-    let snode = yang_ctx.find_path(&dnode.schema().data_path()).unwrap();
+    let parent_path = &path[..last_slash];
+    let terminal = &path[last_slash + 1..];
+
+    // Validate the parent path (which has predicates on interior
+    // lists) and resolve the terminal via schema.
+    let mut dtree_tmp = DataTree::new(yang_ctx);
+    let Ok(Some(parent_dnode)) =
+        dtree_tmp.new_path(parent_path, None, false)
+    else {
+        return;
+    };
+    let parent_snode = yang_ctx
+        .find_path(&parent_dnode.schema().data_path())
+        .unwrap();
+    let Ok(snode) = parent_snode.find_path(terminal) else {
+        return;
+    };
 
     // Must be a list node.
     if snode.kind() != SchemaNodeKind::List {
@@ -391,8 +408,9 @@ pub(crate) fn process_stream_get<P>(
             return;
         }
 
-        // Resolve parent list entry context.
-        let list_entry = lookup_list_entry(provider, &dnode);
+        // Resolve parent list entry context from the parent data
+        // node (not the terminal list — we iterate all its entries).
+        let list_entry = lookup_list_entry(provider, &parent_dnode);
 
         // Build filter from client-provided parameters.
         let filter = GetFilter {
@@ -447,7 +465,7 @@ pub(crate) fn process_stream_get<P>(
     } else {
         // List not in this provider — check if child provider owns it.
         // Walk path to find relay point and forward tx.
-        let list_entry = lookup_list_entry(provider, &dnode);
+        let list_entry = lookup_list_entry(provider, &parent_dnode);
         let module = snode.module();
         if let Some(child_nb_tx) = list_entry.child_task(module.name()) {
             let request = api::daemon::StreamGetRequest {

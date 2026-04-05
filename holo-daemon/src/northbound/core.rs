@@ -270,14 +270,28 @@ impl Northbound {
         exclude: Vec<String>,
     ) -> Result<capi::client::StreamGetResponse> {
         // Validate path and ensure it targets a list node.
+        //
+        // StreamGet streams all entries of a list, so the terminal
+        // node must be a list and must NOT carry key predicates.
+        // Split the path into parent + terminal, validate the parent
+        // with new_path (which requires predicates on interior lists),
+        // then schema-validate the terminal.
         let yang_ctx = YANG_CTX.get().unwrap();
+        let last_slash = path.rfind('/').ok_or(Error::StreamGetNotList)?;
+        let parent_path = &path[..last_slash];
+        let terminal = &path[last_slash + 1..];
+
         let mut dtree_tmp = DataTree::new(yang_ctx);
-        let dnode = dtree_tmp
-            .new_path(&path, None, false)
+        let parent_dnode = dtree_tmp
+            .new_path(parent_path, None, false)
             .map_err(Error::YangInvalidPath)?
             .unwrap();
-        let snode =
-            yang_ctx.find_path(&dnode.schema().data_path()).unwrap();
+        let parent_snode = yang_ctx
+            .find_path(&parent_dnode.schema().data_path())
+            .unwrap();
+        let snode = parent_snode
+            .find_path(terminal)
+            .map_err(Error::YangInvalidPath)?;
         if snode.kind() != SchemaNodeKind::List {
             return Err(Error::StreamGetNotList);
         }
