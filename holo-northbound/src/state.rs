@@ -359,7 +359,7 @@ fn relay_request(
 
 // ===== global functions =====
 
-pub(crate) fn process_stream_get<P>(
+pub(crate) async fn process_stream_get<P>(
     provider: &P,
     path: String,
     max_depth: u32,
@@ -449,24 +449,15 @@ pub(crate) fn process_stream_get<P>(
                 );
 
                 // Collect child provider relay responses.
-                // Use futures::executor::block_on to drive the
-                // async recv/send without interacting with tokio's
-                // runtime context — this works on both async worker
-                // threads and spawn_blocking + block_on threads
-                // (protocol instances like BGP).
                 for relay_rx in relay_list.drain(..) {
-                    if let Ok(Ok(response)) =
-                        futures::executor::block_on(relay_rx)
-                    {
+                    if let Ok(Ok(response)) = relay_rx.await {
                         let _ = entry_dtree.merge(&response.data);
                     }
                 }
 
                 // Send entry. Stop if receiver dropped (client
                 // disconnected).
-                if futures::executor::block_on(tx.send(entry_dtree))
-                    .is_err()
-                {
+                if tx.send(entry_dtree).await.is_err() {
                     return;
                 }
             }
@@ -483,12 +474,9 @@ pub(crate) fn process_stream_get<P>(
                 exclude,
                 tx: Some(tx),
             };
-            tokio::task::spawn(async move {
-                child_nb_tx
-                    .send(api::daemon::Request::StreamGet(request))
-                    .await
-                    .unwrap();
-            });
+            let _ = child_nb_tx
+                .send(api::daemon::Request::StreamGet(request))
+                .await;
         }
     }
 }

@@ -1258,7 +1258,6 @@ dependencies = [
  "check_keyword",
  "convert_case",
  "derive-new",
- "futures",
  "holo-utils",
  "holo-yang",
  "itertools 0.14.0",

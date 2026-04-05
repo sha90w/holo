@@ -121,7 +121,7 @@ where
 // ===== global functions =====
 
 // Processes a northbound message coming from the Holo daemon.
-pub fn process_northbound_msg<Provider>(
+pub async fn process_northbound_msg<Provider>(
     provider: &mut Provider,
     resources: &mut Vec<Option<Provider::Resource>>,
     request: api::daemon::Request,
@@ -168,7 +168,8 @@ pub fn process_northbound_msg<Provider>(
                 request.max_depth,
                 request.exclude,
                 request.tx,
-            );
+            )
+            .await;
         }
         api::daemon::Request::Rpc(request) => {
             let response = rpc::process_rpc(provider, request.data);

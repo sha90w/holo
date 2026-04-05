@@ -267,7 +267,8 @@ async fn event_loop<P>(
         // Process event message.
         match msg {
             InstanceMsg::Northbound(Some(msg)) => {
-                process_northbound_msg(instance, &mut resources, msg);
+                process_northbound_msg(instance, &mut resources, msg)
+                    .await;
             }
             InstanceMsg::Northbound(None) => {
                 // Instance was unconfigured.
