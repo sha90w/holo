@@ -17,6 +17,7 @@ pub mod state;
 pub mod yang_codegen;
 
 use tokio::sync::mpsc::{Receiver, Sender, UnboundedReceiver, UnboundedSender};
+use tracing::trace;
 use yang4::data::DataNodeRef;
 
 use crate::debug::Debug;
@@ -164,6 +165,7 @@ pub async fn process_northbound_msg<Provider>(
             }
         }
         api::daemon::Request::StreamGet(request) => {
+            trace!(path = %request.path, "StreamGet: provider received request");
             state::process_stream_get(
                 provider,
                 request.path,
@@ -172,6 +174,7 @@ pub async fn process_northbound_msg<Provider>(
                 request.tx,
             )
             .await;
+            trace!("StreamGet: provider finished processing");
         }
         api::daemon::Request::Rpc(request) => {
             let response = rpc::process_rpc(provider, request.data).await;

@@ -305,7 +305,8 @@ impl Northbound {
         // Broadcast to all providers (same pattern as get_state).
         // Providers that don't own the target path drop their tx clone
         // immediately, which is harmless.
-        for daemon_tx in self.providers.iter() {
+        for (idx, daemon_tx) in self.providers.iter().enumerate() {
+            trace!(%path, idx, "StreamGet: sending to provider");
             let request = papi::daemon::Request::StreamGet(
                 papi::daemon::StreamGetRequest {
                     path: path.clone(),
@@ -315,8 +316,10 @@ impl Northbound {
                 },
             );
             daemon_tx.send(request).await.unwrap();
+            trace!(%path, idx, "StreamGet: sent to provider");
         }
         // Drop our tx clone so channel closes when all providers finish.
+        trace!(%path, "StreamGet: all providers notified, dropping daemon tx");
         drop(tx);
 
         Ok(capi::client::StreamGetResponse { rx })
