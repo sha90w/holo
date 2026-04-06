@@ -12,8 +12,6 @@ use tokio::sync::oneshot;
 use yang4::data::{DataNodeRef, DataTree};
 use yang4::schema::{SchemaNode, SchemaNodeKind};
 
-use tracing::trace;
-
 use crate::error::Error;
 use crate::{NbDaemonSender, ProviderBase, YangObject, api};
 
@@ -370,17 +368,13 @@ pub(crate) async fn process_stream_get<P>(
 ) where
     P: Provider,
 {
-    let Some(tx) = tx else {
-        trace!("StreamGet: tx is None, returning early");
-        return;
-    };
+    let Some(tx) = tx else { return };
     let yang_ctx = YANG_CTX.get().unwrap();
 
     // Split path into parent + terminal list node name.
     // StreamGet streams all entries, so the terminal must not carry
     // key predicates.
     let Some(last_slash) = path.rfind('/') else {
-        trace!(%path, "StreamGet: no slash in path, returning early");
         return;
     };
     let parent_path = &path[..last_slash];
@@ -392,20 +386,17 @@ pub(crate) async fn process_stream_get<P>(
     let Ok(Some(parent_dnode)) =
         dtree_tmp.new_path(parent_path, None, false)
     else {
-        trace!(%path, "StreamGet: parent path invalid, returning early");
         return;
     };
     let parent_snode = yang_ctx
         .find_path(&parent_dnode.schema().data_path())
         .unwrap();
     let Ok(snode) = parent_snode.find_path(terminal) else {
-        trace!(%path, %terminal, "StreamGet: terminal not found in schema, returning early");
         return;
     };
 
     // Must be a list node.
     if snode.kind() != SchemaNodeKind::List {
-        trace!(%path, "StreamGet: terminal is not a list, returning early");
         return;
     }
 
@@ -414,11 +405,8 @@ pub(crate) async fn process_stream_get<P>(
     // Check if this provider owns this list AND if it's streamable.
     if let Some(list_ops) = P::YANG_OPS.list.get(&snode_path) {
         if !list_ops.streamable {
-            trace!(%path, %snode_path, "StreamGet: list not streamable, returning early");
             return;
         }
-
-        trace!(%path, %snode_path, "StreamGet: provider owns list, iterating entries");
 
         // Resolve parent list entry context from the parent data
         // node (not the terminal list — we iterate all its entries).
@@ -431,7 +419,6 @@ pub(crate) async fn process_stream_get<P>(
         };
 
         // Iterate and stream entries.
-        let mut count = 0u64;
         if let Some(list_iter) = (list_ops.iter)(provider, &list_entry) {
             for entry in list_iter {
                 let obj = (list_ops.new)(provider, &entry);
@@ -451,7 +438,7 @@ pub(crate) async fn process_stream_get<P>(
 
                 // Populate children (containers, nested lists) with filter.
                 let mut relay_list = vec![];
-                let _ = iterate_children(
+                if let Err(e) = iterate_children(
                     provider,
                     &mut entry_dnode,
                     &snode,
@@ -459,7 +446,9 @@ pub(crate) async fn process_stream_get<P>(
                     &mut relay_list,
                     &filter,
                     0,
-                );
+                ) {
+                    tracing::warn!(%path, %e, "StreamGet: error populating entry children");
+                }
 
                 // Collect child provider relay responses.
                 for relay_rx in relay_list.drain(..) {
@@ -470,23 +459,17 @@ pub(crate) async fn process_stream_get<P>(
 
                 // Send entry. Stop if receiver dropped (client
                 // disconnected).
-                count += 1;
                 if tx.send(entry_dtree).await.is_err() {
-                    trace!(%path, count, "StreamGet: receiver dropped, stopping");
                     return;
                 }
             }
         }
-        trace!(%path, count, "StreamGet: finished iterating entries");
     } else {
         // List not in this provider — check if child provider owns it.
         // Walk path to find relay point and forward tx.
         let list_entry = lookup_list_entry(provider, &parent_dnode);
         let module = snode.module();
-        let module_name = module.name();
-        trace!(%path, %snode_path, %module_name, "StreamGet: list not owned, checking child_task");
         if let Some(child_nb_tx) = list_entry.child_task(module.name()) {
-            trace!(%path, %module_name, "StreamGet: relaying to child provider");
             let request = api::daemon::StreamGetRequest {
                 path,
                 max_depth,
@@ -496,9 +479,6 @@ pub(crate) async fn process_stream_get<P>(
             let _ = child_nb_tx
                 .send(api::daemon::Request::StreamGet(request))
                 .await;
-            trace!(%module_name, "StreamGet: relay send complete");
-        } else {
-            trace!(%path, %module_name, "StreamGet: no child_task, dropping tx");
         }
     }
 }

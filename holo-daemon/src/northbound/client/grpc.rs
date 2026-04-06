@@ -388,11 +388,7 @@ impl proto::Northbound for NorthboundService {
 
         tokio::spawn(async move {
             let mut rx = nb_response.rx;
-            let mut count = 0u64;
-            trace!("StreamGet bridge: started");
             while let Some(dtree) = rx.recv().await {
-                count += 1;
-                trace!(count, "StreamGet bridge: received entry from provider");
                 let mut printer_flags =
                     DataPrinterFlags::WITH_SIBLINGS;
                 if with_defaults {
@@ -409,11 +405,9 @@ impl proto::Northbound for NorthboundService {
                 });
                 if proto_tx.send(result).await.is_err() {
                     // Client disconnected.
-                    trace!(count, "StreamGet bridge: client disconnected");
                     break;
                 }
             }
-            trace!(count, "StreamGet bridge: channel closed, task ending");
         });
 
         Ok(Response::new(ReceiverStream::new(proto_rx)))
