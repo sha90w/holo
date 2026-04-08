@@ -39,7 +39,11 @@ pub enum EventMsg {
 // ===== impl Master =====
 
 impl Master {
-    fn run(&mut self, nb_rx: NbDaemonReceiver, ibus_rx: IbusReceiver) {
+    async fn run(
+        &mut self,
+        nb_rx: NbDaemonReceiver,
+        ibus_rx: IbusReceiver,
+    ) {
         // Spawn event aggregator task.
         let (agg_tx, mut agg_rx) = mpsc::channel(4);
         let _event_aggregator = event_aggregator(nb_rx, ibus_rx, agg_tx);
@@ -47,12 +51,13 @@ impl Master {
         let mut resources = vec![];
         loop {
             // Receive event message.
-            let msg = agg_rx.blocking_recv().unwrap();
+            let msg = agg_rx.recv().await.unwrap();
 
             // Process event message.
             match msg {
                 EventMsg::Northbound(Some(msg)) => {
-                    process_northbound_msg(self, &mut resources, msg);
+                    process_northbound_msg(self, &mut resources, msg)
+                        .await;
                 }
                 EventMsg::Northbound(None) => {
                     // Exit when northbound channel closes.
@@ -103,7 +108,8 @@ pub fn start(
         // Run task main loop.
         let span = debug_span!("key-chain");
         let _span_guard = span.enter();
-        master.run(nb_daemon_rx, ibus_rx);
+        tokio::runtime::Handle::current()
+            .block_on(master.run(nb_daemon_rx, ibus_rx));
     });
 
     nb_daemon_tx

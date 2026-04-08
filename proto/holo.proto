@@ -35,6 +35,9 @@ service Northbound {
   // Retrieve configuration data, state data or both from the target.
   rpc Get(GetRequest) returns (GetResponse) {}
 
+  // Stream large YANG list entries one at a time.
+  rpc StreamGet(GetRequest) returns (stream GetResponse) {}
+
   // Validate the configuration without committing it.
   rpc Validate(ValidateRequest) returns (ValidateResponse) {}
 
@@ -129,6 +132,16 @@ message GetRequest {
 
   // Requested YANG path.
   string path = 4;
+
+  // Maximum depth of the YANG tree traversal (0 = unlimited).
+  // A value of 1 returns only immediate children of the requested path.
+  // Applies only to state data.
+  uint32 max_depth = 5;
+
+  // YANG node names to exclude from the response (matched at any depth).
+  // Use "name" to match by node name or "module:name" for module-qualified
+  // matching (e.g. "rib" matches all, "ietf-bgp:rib" matches only BGP's).
+  repeated string exclude = 6;
 }
 
 message GetResponse {

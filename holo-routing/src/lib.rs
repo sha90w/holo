@@ -85,7 +85,7 @@ pub enum EventMsg {
 // ===== impl Master =====
 
 impl Master {
-    fn run(
+    async fn run(
         &mut self,
         nb_rx: NbDaemonReceiver,
         ibus_rx: IbusReceiver,
@@ -105,12 +105,13 @@ impl Master {
         let mut resources = vec![];
         loop {
             // Receive event message.
-            let msg = agg_rx.blocking_recv().unwrap();
+            let msg = agg_rx.recv().await.unwrap();
 
             // Process event message.
             match msg {
                 EventMsg::Northbound(Some(msg)) => {
-                    process_northbound_msg(self, &mut resources, msg);
+                    process_northbound_msg(self, &mut resources, msg)
+                        .await;
                 }
                 EventMsg::Northbound(None) => {
                     // Exit when northbound channel closes.
@@ -248,17 +249,18 @@ pub fn start(
         tokio::task::spawn_blocking(move || {
             let span = debug_span!("routing");
             let _span_guard = span.enter();
-            master.run(
+            let handle = tokio::runtime::Handle::current();
+            handle.block_on(master.run(
                 nb_daemon_rx,
                 ibus_rx,
                 rib_update_queue_rx,
                 birt_update_queue_rx,
-            );
+            ));
 
             // Uninstall all routes before exiting.
             master.rib.route_uninstall_all(&master.netlink_tx);
             drop(master.netlink_tx);
-            let _ = tokio::runtime::Handle::current().block_on(netlink_tx_task);
+            let _ = handle.block_on(netlink_tx_task);
         });
     });
 

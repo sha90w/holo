@@ -40,6 +40,8 @@ pub trait YangContainer<'a, P: Provider> {
 
 // Implemented by all auto-generated YANG list structs that hold state data.
 pub trait YangList<'a, P: Provider> {
+    const STREAMABLE: bool = false;
+
     fn iter(
         provider: &'a P,
         list_entry: &P::ListEntry<'a>,
@@ -59,10 +61,17 @@ pub struct YangOps<P: Provider> {
 pub struct YangListOps<P: Provider> {
     pub iter: YangListIterFn<P>,
     pub new: YangListNewFn<P>,
+    pub streamable: bool,
 }
 
 pub struct YangContainerOps<P: Provider> {
     pub new: YangContainerNewFn<P>,
+}
+
+// Filter options for Get requests.
+pub(crate) struct GetFilter {
+    pub max_depth: u32,
+    pub exclude: Vec<String>,
 }
 
 // Type aliases.
@@ -85,21 +94,46 @@ fn iterate_node<'a, P>(
     list_entry: &P::ListEntry<'a>,
     relay_list: &mut Vec<GetReceiver>,
     first: bool,
+    filter: &GetFilter,
+    current_depth: u32,
 ) -> Result<(), Error>
 where
     P: Provider,
 {
     match snode.kind() {
         SchemaNodeKind::List => {
-            iterate_list(provider, dnode, snode, list_entry, relay_list)?;
+            iterate_list(
+                provider,
+                dnode,
+                snode,
+                list_entry,
+                relay_list,
+                filter,
+                current_depth,
+            )?;
         }
         SchemaNodeKind::Container => {
             iterate_container(
-                provider, dnode, snode, list_entry, relay_list, first,
+                provider,
+                dnode,
+                snode,
+                list_entry,
+                relay_list,
+                first,
+                filter,
+                current_depth,
             )?;
         }
         SchemaNodeKind::Choice | SchemaNodeKind::Case => {
-            iterate_children(provider, dnode, snode, list_entry, relay_list)?;
+            iterate_children(
+                provider,
+                dnode,
+                snode,
+                list_entry,
+                relay_list,
+                filter,
+                current_depth,
+            )?;
         }
         _ => (),
     }
@@ -113,6 +147,8 @@ fn iterate_list<'a, P>(
     snode: &SchemaNode<'_>,
     parent_list_entry: &P::ListEntry<'a>,
     relay_list: &mut Vec<GetReceiver>,
+    filter: &GetFilter,
+    current_depth: u32,
 ) -> Result<(), Error>
 where
     P: Provider,
@@ -142,6 +178,8 @@ where
                 snode,
                 &list_entry,
                 relay_list,
+                filter,
+                current_depth,
             )?;
         }
     }
@@ -156,6 +194,8 @@ fn iterate_container<'a, P>(
     list_entry: &P::ListEntry<'a>,
     relay_list: &mut Vec<GetReceiver>,
     first: bool,
+    filter: &GetFilter,
+    current_depth: u32,
 ) -> Result<(), Error>
 where
     P: Provider,
@@ -180,7 +220,9 @@ where
         obj.into_data_node(dnode);
     }
 
-    iterate_children(provider, dnode, snode, list_entry, relay_list)?;
+    iterate_children(
+        provider, dnode, snode, list_entry, relay_list, filter, current_depth,
+    )?;
 
     // Remove the container node if it was added and remains empty.
     if !first && dnode.children().next().is_none() {
@@ -196,10 +238,17 @@ fn iterate_children<'a, P>(
     snode: &SchemaNode<'_>,
     list_entry: &P::ListEntry<'a>,
     relay_list: &mut Vec<GetReceiver>,
+    filter: &GetFilter,
+    current_depth: u32,
 ) -> Result<(), Error>
 where
     P: Provider,
 {
+    // Depth limit: 0 means unlimited.
+    if filter.max_depth > 0 && current_depth >= filter.max_depth {
+        return Ok(());
+    }
+
     for snode in snode.children().filter(|snode| {
         matches!(
             snode.kind(),
@@ -209,18 +258,43 @@ where
                 | SchemaNodeKind::Case
         )
     }) {
-        // Check if the provider implements the child node.
+        // Skip exclude check for Choice/Case — they are transparent
+        // schema wrappers; their real data children will be checked
+        // individually on the next recursion.
         let module = snode.module();
+        let node_name = snode.name();
+        let module_name = module.name();
+        if !matches!(
+            snode.kind(),
+            SchemaNodeKind::Choice | SchemaNodeKind::Case
+        ) && filter.exclude.iter().any(|e| match e.split_once(':') {
+            Some((m, n)) => m == module_name && n == node_name,
+            None => e.as_str() == node_name,
+        }) {
+            continue;
+        }
+
+        // Check if the provider implements the child node.
         if let Some(child_nb_tx) = list_entry.child_task(module.name()) {
             // Prepare request to child task.
             let path =
                 format!("{}/{}:{}", dnode.path(), module.name(), snode.name());
-            let relay_rx = relay_request(child_nb_tx, path);
+            let relay_rx =
+                relay_request(child_nb_tx, path, filter, current_depth);
             relay_list.push(relay_rx);
             continue;
         }
 
-        iterate_node(provider, dnode, &snode, list_entry, relay_list, false)?;
+        iterate_node(
+            provider,
+            dnode,
+            &snode,
+            list_entry,
+            relay_list,
+            false,
+            filter,
+            current_depth + 1,
+        )?;
     }
 
     Ok(())
@@ -276,10 +350,23 @@ where
     list_entry
 }
 
-fn relay_request(nb_tx: NbDaemonSender, path: String) -> GetReceiver {
+fn relay_request(
+    nb_tx: NbDaemonSender,
+    path: String,
+    filter: &GetFilter,
+    current_depth: u32,
+) -> GetReceiver {
     let (responder_tx, responder_rx) = oneshot::channel();
     let request = api::daemon::GetRequest {
         path: Some(path),
+        // Clamp to 1 so that saturating to 0 never flips the meaning
+        // from "stop" to "unlimited" (0 = no limit in the protocol).
+        max_depth: if filter.max_depth > 0 {
+            filter.max_depth.saturating_sub(current_depth).max(1)
+        } else {
+            0
+        },
+        exclude: filter.exclude.clone(),
         responder: Some(responder_tx),
     };
     tokio::task::spawn(async move {
@@ -293,9 +380,135 @@ fn relay_request(nb_tx: NbDaemonSender, path: String) -> GetReceiver {
 
 // ===== global functions =====
 
-pub(crate) fn process_get<P>(
+pub(crate) async fn process_stream_get<P>(
+    provider: &P,
+    path: String,
+    max_depth: u32,
+    exclude: Vec<String>,
+    tx: Option<tokio::sync::mpsc::Sender<DataTree<'static>>>,
+) where
+    P: Provider,
+{
+    let Some(tx) = tx else { return };
+    let yang_ctx = YANG_CTX.get().unwrap();
+
+    // Split path into parent + terminal list node name.
+    // StreamGet streams all entries, so the terminal must not carry
+    // key predicates.
+    let Some(last_slash) = path.rfind('/') else {
+        return;
+    };
+    let parent_path = &path[..last_slash];
+    let terminal = &path[last_slash + 1..];
+
+    // Validate the parent path (which has predicates on interior
+    // lists) and resolve the terminal via schema.
+    let mut dtree_tmp = DataTree::new(yang_ctx);
+    let Ok(Some(parent_dnode)) =
+        dtree_tmp.new_path(parent_path, None, false)
+    else {
+        return;
+    };
+    let parent_snode = yang_ctx
+        .find_path(&parent_dnode.schema().data_path())
+        .unwrap();
+    let Ok(snode) = parent_snode.find_path(terminal) else {
+        return;
+    };
+
+    // Must be a list node.
+    if snode.kind() != SchemaNodeKind::List {
+        return;
+    }
+
+    let snode_path = snode.data_path();
+
+    // Check if this provider owns this list AND if it's streamable.
+    if let Some(list_ops) = P::YANG_OPS.list.get(&snode_path) {
+        if !list_ops.streamable {
+            return;
+        }
+
+        // Resolve parent list entry context from the parent data
+        // node (not the terminal list — we iterate all its entries).
+        let list_entry = lookup_list_entry(provider, &parent_dnode);
+
+        // Build filter from client-provided parameters.
+        let filter = GetFilter {
+            max_depth,
+            exclude,
+        };
+
+        // Iterate and stream entries.
+        if let Some(list_iter) = (list_ops.iter)(provider, &list_entry) {
+            for entry in list_iter {
+                let obj = (list_ops.new)(provider, &entry);
+                let keys = obj.list_keys();
+
+                // Build mini DataTree for this single entry.
+                let mut entry_dtree = DataTree::new(yang_ctx);
+                let entry_path = format!("{}{}", path, keys);
+                let Ok(Some(mut entry_dnode)) =
+                    entry_dtree.new_path(&entry_path, None, false)
+                else {
+                    continue;
+                };
+
+                // Populate entry fields.
+                obj.into_data_node(&mut entry_dnode);
+
+                // Populate children (containers, nested lists) with filter.
+                let mut relay_list = vec![];
+                if let Err(e) = iterate_children(
+                    provider,
+                    &mut entry_dnode,
+                    &snode,
+                    &entry,
+                    &mut relay_list,
+                    &filter,
+                    0,
+                ) {
+                    tracing::warn!(%path, %e, "StreamGet: error populating entry children");
+                }
+
+                // Collect child provider relay responses.
+                for relay_rx in relay_list.drain(..) {
+                    if let Ok(Ok(response)) = relay_rx.await {
+                        let _ = entry_dtree.merge(&response.data);
+                    }
+                }
+
+                // Send entry. Stop if receiver dropped (client
+                // disconnected).
+                if tx.send(entry_dtree).await.is_err() {
+                    return;
+                }
+            }
+        }
+    } else {
+        // List not in this provider — check if child provider owns it.
+        // Walk path to find relay point and forward tx.
+        let list_entry = lookup_list_entry(provider, &parent_dnode);
+        let module = snode.module();
+        if let Some(child_nb_tx) = list_entry.child_task(module.name()) {
+            let request = api::daemon::StreamGetRequest {
+                path,
+                max_depth,
+                exclude,
+                tx: Some(tx),
+            };
+            let _ = child_nb_tx
+                .send(api::daemon::Request::StreamGet(request))
+                .await;
+        }
+    }
+}
+
+pub(crate) async fn process_get<P>(
     provider: &P,
     path: Option<String>,
+    max_depth: u32,
+    exclude: Vec<String>,
 ) -> Result<api::daemon::GetResponse, Error>
 where
     P: Provider,
@@ -314,11 +527,17 @@ where
     let list_entry = lookup_list_entry(provider, &dnode);
     let snode = yang_ctx.find_path(&dnode.schema().data_path()).unwrap();
 
+    // Build filter options.
+    let filter = GetFilter {
+        max_depth,
+        exclude,
+    };
+
     // Check if the provider implements the child node.
     let module = snode.module();
     if let Some(child_nb_tx) = list_entry.child_task(module.name()) {
         // Prepare request to child task.
-        let relay_rx = relay_request(child_nb_tx, path);
+        let relay_rx = relay_request(child_nb_tx, path, &filter, 0);
         relay_list.push(relay_rx);
     } else {
         // If a list entry was given, iterate over that list entry.
@@ -329,6 +548,8 @@ where
                 &snode,
                 &list_entry,
                 &mut relay_list,
+                &filter,
+                0,
             )?;
         } else {
             iterate_node(
@@ -338,13 +559,15 @@ where
                 &list_entry,
                 &mut relay_list,
                 true,
+                &filter,
+                0,
             )?;
         }
     }
 
     // Collect responses from all relayed requests.
     for relay_rx in relay_list {
-        let response = relay_rx.blocking_recv().unwrap()?;
+        let response = relay_rx.await.unwrap()?;
         dtree
             .merge(&response.data)
             .map_err(Error::YangInvalidData)?;

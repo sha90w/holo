@@ -66,7 +66,7 @@ where
     Ok(response)
 }
 
-fn process_rpc_relayed(
+async fn process_rpc_relayed(
     mut data: DataTree<'static>,
     children_nb_tx: Vec<NbDaemonSender>,
 ) -> Result<api::daemon::RpcResponse, Error> {
@@ -78,11 +78,12 @@ fn process_rpc_relayed(
             responder: Some(responder_tx),
         };
         nb_tx
-            .blocking_send(api::daemon::Request::Rpc(relayed_req))
+            .send(api::daemon::Request::Rpc(relayed_req))
+            .await
             .unwrap();
 
         // Receive response.
-        let response = responder_rx.blocking_recv().unwrap()?;
+        let response = responder_rx.await.unwrap()?;
         data = response.data;
     }
 
@@ -103,7 +104,7 @@ fn find_rpc<'a>(data: &'a DataTree<'static>) -> Result<DataNodeRef<'a>, Error> {
 
 // ===== global functions =====
 
-pub(crate) fn process_rpc<P>(
+pub(crate) async fn process_rpc<P>(
     provider: &mut P,
     data: DataTree<'static>,
 ) -> Result<api::daemon::RpcResponse, Error>
@@ -114,7 +115,7 @@ where
     if let Some(children_nb_tx) =
         provider.relay_rpc(&rpc).map_err(Error::RpcRelay)?
     {
-        process_rpc_relayed(data, children_nb_tx)
+        process_rpc_relayed(data, children_nb_tx).await
     } else {
         let rpc_data_path = rpc.path().to_owned();
         let rpc_schema_path = rpc.schema().data_path();

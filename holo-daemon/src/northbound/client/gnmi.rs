@@ -136,6 +136,8 @@ impl proto::GNmi for GNmiService {
             let nb_request = api::client::GetRequest {
                 data_type,
                 path: Some(path),
+                max_depth: 0,
+                exclude: vec![],
                 responder: responder_tx,
             };
             let nb_request = api::client::Request::Get(nb_request);
@@ -403,6 +405,8 @@ impl GNmiService {
         let nb_request = api::client::GetRequest {
             data_type: api::DataType::Configuration,
             path: None,
+            max_depth: 0,
+            exclude: vec![],
             responder: responder_tx,
         };
         let nb_request = api::client::Request::Get(nb_request);

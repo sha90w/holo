@@ -374,6 +374,8 @@ impl<'a> YangContainer<'a, Instance> for bgp::neighbors::neighbor::statistics::m
 }
 
 impl<'a> YangList<'a, Instance> for bgp::rib::attr_sets::attr_set::AttrSet {
+    const STREAMABLE: bool = true;
+
     fn iter(instance: &'a Instance, _list_entry: &ListEntry<'a>) -> Option<ListIterator<'a>> {
         let rib = &instance.state.as_ref()?.rib;
         let iter = rib.attr_sets.base.tree.values().map(ListEntry::RibBaseAttrs);
@@ -463,6 +465,8 @@ impl<'a> YangContainer<'a, Instance> for bgp::rib::attr_sets::attr_set::attribut
 }
 
 impl<'a> YangList<'a, Instance> for bgp::rib::communities::community::Community<'a> {
+    const STREAMABLE: bool = true;
+
     fn iter(instance: &'a Instance, _list_entry: &ListEntry<'a>) -> Option<ListIterator<'a>> {
         let rib = &instance.state.as_ref()?.rib;
         let iter = rib.attr_sets.comm.tree.values().map(ListEntry::RibComms);
@@ -480,6 +484,8 @@ impl<'a> YangList<'a, Instance> for bgp::rib::communities::community::Community<
 }
 
 impl<'a> YangList<'a, Instance> for bgp::rib::ext_communities::ext_community::ExtCommunity<'a> {
+    const STREAMABLE: bool = true;
+
     fn iter(instance: &'a Instance, _list_entry: &ListEntry<'a>) -> Option<ListIterator<'a>> {
         let rib = &instance.state.as_ref()?.rib;
         let iter = rib.attr_sets.ext_comm.tree.values().map(ListEntry::RibExtComms);
@@ -498,6 +504,8 @@ impl<'a> YangList<'a, Instance> for bgp::rib::ext_communities::ext_community::Ex
 }
 
 impl<'a> YangList<'a, Instance> for bgp::rib::ipv6_ext_communities::ipv6_ext_community::Ipv6ExtCommunity<'a> {
+    const STREAMABLE: bool = true;
+
     fn iter(instance: &'a Instance, _list_entry: &ListEntry<'a>) -> Option<ListIterator<'a>> {
         let rib = &instance.state.as_ref()?.rib;
         let iter = rib.attr_sets.extv6_comm.tree.values().map(ListEntry::RibExtv6Comms);
@@ -516,6 +524,8 @@ impl<'a> YangList<'a, Instance> for bgp::rib::ipv6_ext_communities::ipv6_ext_com
 }
 
 impl<'a> YangList<'a, Instance> for bgp::rib::large_communities::large_community::LargeCommunity<'a> {
+    const STREAMABLE: bool = true;
+
     fn iter(instance: &'a Instance, _list_entry: &ListEntry<'a>) -> Option<ListIterator<'a>> {
         let rib = &instance.state.as_ref()?.rib;
         let iter = rib.attr_sets.large_comm.tree.values().map(ListEntry::RibLargeComms);
@@ -548,6 +558,8 @@ impl<'a> YangList<'a, Instance> for bgp::rib::afi_safis::afi_safi::AfiSafi<'a> {
 }
 
 impl<'a> YangList<'a, Instance> for bgp::rib::afi_safis::afi_safi::ipv4_unicast::loc_rib::routes::route::Route<'a> {
+    const STREAMABLE: bool = true;
+
     fn iter(instance: &'a Instance, list_entry: &ListEntry<'a>) -> Option<ListIterator<'a>> {
         let afi_safi = list_entry.as_rib().unwrap();
         if *afi_safi != AfiSafi::Ipv4Unicast {
@@ -618,6 +630,8 @@ impl<'a> YangList<'a, Instance> for bgp::rib::afi_safis::afi_safi::ipv4_unicast:
 }
 
 impl<'a> YangList<'a, Instance> for bgp::rib::afi_safis::afi_safi::ipv4_unicast::neighbors::neighbor::adj_rib_in_pre::routes::route::Route<'a> {
+    const STREAMABLE: bool = true;
+
     fn iter(instance: &'a Instance, list_entry: &ListEntry<'a>) -> Option<ListIterator<'a>> {
         let nbr = list_entry.as_rib_neighbor().unwrap();
         let rib = &instance.state.as_ref()?.rib;
@@ -666,6 +680,8 @@ impl<'a> YangList<'a, Instance> for bgp::rib::afi_safis::afi_safi::ipv4_unicast:
 }
 
 impl<'a> YangList<'a, Instance> for bgp::rib::afi_safis::afi_safi::ipv4_unicast::neighbors::neighbor::adj_rib_in_post::routes::route::Route<'a> {
+    const STREAMABLE: bool = true;
+
     fn iter(instance: &'a Instance, list_entry: &ListEntry<'a>) -> Option<ListIterator<'a>> {
         let nbr = list_entry.as_rib_neighbor().unwrap();
         let rib = &instance.state.as_ref()?.rib;
@@ -715,6 +731,8 @@ impl<'a> YangList<'a, Instance> for bgp::rib::afi_safis::afi_safi::ipv4_unicast:
 }
 
 impl<'a> YangList<'a, Instance> for bgp::rib::afi_safis::afi_safi::ipv4_unicast::neighbors::neighbor::adj_rib_out_pre::routes::route::Route<'a> {
+    const STREAMABLE: bool = true;
+
     fn iter(instance: &'a Instance, list_entry: &ListEntry<'a>) -> Option<ListIterator<'a>> {
         let nbr = list_entry.as_rib_neighbor().unwrap();
         let rib = &instance.state.as_ref()?.rib;
@@ -763,6 +781,8 @@ impl<'a> YangList<'a, Instance> for bgp::rib::afi_safis::afi_safi::ipv4_unicast:
 }
 
 impl<'a> YangList<'a, Instance> for bgp::rib::afi_safis::afi_safi::ipv4_unicast::neighbors::neighbor::adj_rib_out_post::routes::route::Route<'a> {
+    const STREAMABLE: bool = true;
+
     fn iter(instance: &'a Instance, list_entry: &ListEntry<'a>) -> Option<ListIterator<'a>> {
         let nbr = list_entry.as_rib_neighbor().unwrap();
         let rib = &instance.state.as_ref()?.rib;
@@ -811,6 +831,8 @@ impl<'a> YangList<'a, Instance> for bgp::rib::afi_safis::afi_safi::ipv4_unicast:
 }
 
 impl<'a> YangList<'a, Instance> for bgp::rib::afi_safis::afi_safi::ipv6_unicast::loc_rib::routes::route::Route<'a> {
+    const STREAMABLE: bool = true;
+
     fn iter(instance: &'a Instance, list_entry: &ListEntry<'a>) -> Option<ListIterator<'a>> {
         let afi_safi = list_entry.as_rib().unwrap();
         if *afi_safi != AfiSafi::Ipv6Unicast {
@@ -881,6 +903,8 @@ impl<'a> YangList<'a, Instance> for bgp::rib::afi_safis::afi_safi::ipv6_unicast:
 }
 
 impl<'a> YangList<'a, Instance> for bgp::rib::afi_safis::afi_safi::ipv6_unicast::neighbors::neighbor::adj_rib_in_pre::routes::route::Route<'a> {
+    const STREAMABLE: bool = true;
+
     fn iter(instance: &'a Instance, list_entry: &ListEntry<'a>) -> Option<ListIterator<'a>> {
         let nbr = list_entry.as_rib_neighbor().unwrap();
         let rib = &instance.state.as_ref()?.rib;
@@ -929,6 +953,8 @@ impl<'a> YangList<'a, Instance> for bgp::rib::afi_safis::afi_safi::ipv6_unicast:
 }
 
 impl<'a> YangList<'a, Instance> for bgp::rib::afi_safis::afi_safi::ipv6_unicast::neighbors::neighbor::adj_rib_in_post::routes::route::Route<'a> {
+    const STREAMABLE: bool = true;
+
     fn iter(instance: &'a Instance, list_entry: &ListEntry<'a>) -> Option<ListIterator<'a>> {
         let nbr = list_entry.as_rib_neighbor().unwrap();
         let rib = &instance.state.as_ref()?.rib;
@@ -978,6 +1004,8 @@ impl<'a> YangList<'a, Instance> for bgp::rib::afi_safis::afi_safi::ipv6_unicast:
 }
 
 impl<'a> YangList<'a, Instance> for bgp::rib::afi_safis::afi_safi::ipv6_unicast::neighbors::neighbor::adj_rib_out_pre::routes::route::Route<'a> {
+    const STREAMABLE: bool = true;
+
     fn iter(instance: &'a Instance, list_entry: &ListEntry<'a>) -> Option<ListIterator<'a>> {
         let nbr = list_entry.as_rib_neighbor().unwrap();
         let rib = &instance.state.as_ref()?.rib;
@@ -1026,6 +1054,8 @@ impl<'a> YangList<'a, Instance> for bgp::rib::afi_safis::afi_safi::ipv6_unicast:
 }
 
 impl<'a> YangList<'a, Instance> for bgp::rib::afi_safis::afi_safi::ipv6_unicast::neighbors::neighbor::adj_rib_out_post::routes::route::Route<'a> {
+    const STREAMABLE: bool = true;
+
     fn iter(instance: &'a Instance, list_entry: &ListEntry<'a>) -> Option<ListIterator<'a>> {
         let nbr = list_entry.as_rib_neighbor().unwrap();
         let rib = &instance.state.as_ref()?.rib;

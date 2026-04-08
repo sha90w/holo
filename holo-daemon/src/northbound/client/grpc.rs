@@ -12,6 +12,7 @@ use std::time::SystemTime;
 use futures::Stream;
 use holo_utils::task::Task;
 use holo_yang::{YANG_CTX, YANG_FEATURES};
+use tokio_stream::wrappers::ReceiverStream;
 use tokio::sync::mpsc::Sender;
 use tokio::sync::oneshot;
 use tonic::transport::{Server, ServerTlsConfig};
@@ -172,9 +173,13 @@ impl proto::Northbound for NorthboundService {
             .map_err(|_| Status::invalid_argument("Invalid data encoding"))?;
         let with_defaults = grpc_request.with_defaults;
         let path = (!grpc_request.path.is_empty()).then_some(grpc_request.path);
+        let max_depth = grpc_request.max_depth;
+        let exclude = grpc_request.exclude;
         let nb_request = api::client::Request::Get(api::client::GetRequest {
             data_type,
             path,
+            max_depth,
+            exclude,
             responder: responder_tx,
         });
         self.request_tx.send(nb_request).await.unwrap();
@@ -324,6 +329,90 @@ impl proto::Northbound for NorthboundService {
         Ok(Response::new(grpc_response))
     }
 
+    type StreamGetStream =
+        ReceiverStream<Result<proto::GetResponse, Status>>;
+
+    async fn stream_get(
+        &self,
+        grpc_request: Request<proto::GetRequest>,
+    ) -> Result<Response<Self::StreamGetStream>, Status> {
+        let grpc_request = grpc_request.into_inner();
+        trace_span!("northbound").in_scope(|| {
+            trace_span!("client", name = "grpc").in_scope(|| {
+                trace!(data = ?grpc_request, "received StreamGet() request");
+            });
+        });
+
+        // StreamGet only supports state data.
+        let data_type = api::DataType::try_from(grpc_request.r#type)?;
+        if !matches!(data_type, api::DataType::State) {
+            return Err(Status::invalid_argument(
+                "StreamGet only supports state data",
+            ));
+        }
+        let encoding = proto::Encoding::try_from(grpc_request.encoding)
+            .map_err(|_| {
+                Status::invalid_argument("Invalid data encoding")
+            })?;
+        let with_defaults = grpc_request.with_defaults;
+        let path = grpc_request.path;
+        if path.is_empty() {
+            return Err(Status::invalid_argument(
+                "Path is required for StreamGet",
+            ));
+        }
+
+        // Create oneshot to receive the mpsc::Receiver from the daemon.
+        let (responder_tx, responder_rx) = oneshot::channel();
+        let max_depth = grpc_request.max_depth;
+        let exclude = grpc_request.exclude;
+        let nb_request = api::client::Request::StreamGet(
+            api::client::StreamGetRequest {
+                path,
+                max_depth,
+                exclude,
+                responder: responder_tx,
+            },
+        );
+        self.request_tx.send(nb_request).await.unwrap();
+
+        // Receive the mpsc::Receiver from the daemon.
+        let nb_response = responder_rx.await.unwrap()?;
+
+        // Bridge: spawn a task that reads DataTree items from the provider
+        // channel, serializes each to proto, and forwards to a new channel
+        // whose receiver becomes the gRPC stream.
+        let (proto_tx, proto_rx) = tokio::sync::mpsc::channel::<
+            Result<proto::GetResponse, Status>,
+        >(32);
+
+        tokio::spawn(async move {
+            let mut rx = nb_response.rx;
+            while let Some(dtree) = rx.recv().await {
+                let mut printer_flags =
+                    DataPrinterFlags::WITH_SIBLINGS;
+                if with_defaults {
+                    printer_flags.insert(DataPrinterFlags::WD_ALL);
+                }
+                let result = data_tree_init(
+                    &dtree,
+                    encoding,
+                    printer_flags,
+                )
+                .map(|data| proto::GetResponse {
+                    timestamp: get_timestamp(),
+                    data: Some(data),
+                });
+                if proto_tx.send(result).await.is_err() {
+                    // Client disconnected.
+                    break;
+                }
+            }
+        });
+
+        Ok(Response::new(ReceiverStream::new(proto_rx)))
+    }
+
     type ListTransactionsStream = Pin<
         Box<
             dyn Stream<Item = Result<proto::ListTransactionsResponse, Status>>
@@ -430,6 +519,9 @@ impl From<northbound::Error> for Status {
                 Status::not_found(error.to_string())
             }
             northbound::Error::Get(..) => {
+                Status::invalid_argument(error.to_string())
+            }
+            northbound::Error::StreamGetNotList => {
                 Status::invalid_argument(error.to_string())
             }
         }

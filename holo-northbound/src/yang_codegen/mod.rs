@@ -22,6 +22,7 @@ use yang4::schema::{
 
 use crate::yang_codegen::code_writer::{CodeWriter, emit};
 use crate::yang_codegen::struct_builder::StructBuilder;
+use crate::yang_codegen::types::SchemaLeafTypeCodegenExt;
 
 const HEADER_YANG_OBJECTS: &str = r#"
 use std::borrow::Cow;
@@ -275,13 +276,13 @@ fn generate_default_value(
 fn write_ops_map_entry(
     w: &mut CodeWriter,
     snode: &SchemaNode<'_>,
-    ops_expr: impl Fn(&str) -> String,
+    ops_expr: impl Fn(&str, &SchemaNode<'_>) -> String,
 ) -> std::fmt::Result {
     let path = snode.path(SchemaPathFormat::DATA);
     let type_name = snode.rust_name(Case::Pascal);
     emit!(w, 2, "\"{path}\" => {{")?;
     emit!(w, 3, "use {}::{type_name};", snode.rust_module_path())?;
-    emit!(w, 3, "{}", ops_expr(&type_name))?;
+    emit!(w, 3, "{}", ops_expr(&type_name, snode))?;
     emit!(w, 2, "}},")?;
     Ok(())
 }
@@ -291,7 +292,7 @@ fn write_ops_map<'a>(
     const_name: &str,
     type_str: &str,
     snodes: impl Iterator<Item = SchemaNode<'a>>,
-    ops_expr: impl Fn(&str) -> String,
+    ops_expr: impl Fn(&str, &SchemaNode<'_>) -> String,
 ) -> std::fmt::Result {
     emit!(
         w,
@@ -324,9 +325,11 @@ fn generate_yang_ops(
             .filter(|snode| {
                 !path_filter.is_some_and(|name| snode.has_ancestor_named(name))
             }),
-        |name| {
+        |name, snode| {
+            let anon_lifetime =
+                if snode_needs_lifetime(snode) { "<'_>" } else { "" };
             format!(
-                "YangListOps {{ iter: |p, le| {name}::iter(p, le), new: |p, le| Box::new({name}::new(p, le)) }}"
+                "YangListOps {{ iter: |p, le| {name}::iter(p, le), new: |p, le| Box::new({name}::new(p, le)), streamable: <{name}{anon_lifetime} as YangList<'_, Provider>>::STREAMABLE }}"
             )
         },
     )?;
@@ -344,7 +347,7 @@ fn generate_yang_ops(
             .filter(|snode| {
                 !path_filter.is_some_and(|name| snode.has_ancestor_named(name))
             }),
-        |name| {
+        |name, _snode| {
             format!(
                 "YangContainerOps {{ new: |p, le| {name}::new(p, le).map(|c| Box::new(c) as _) }}"
             )
@@ -373,7 +376,7 @@ fn generate_yang_ops(
                     SchemaNodeKind::Rpc | SchemaNodeKind::Action
                 )
             }),
-        |name| format!("YangRpcOps {{ invoke: {name}::invoke }}"),
+        |name, _snode| format!("YangRpcOps {{ invoke: {name}::invoke }}"),
     )?;
 
     emit!(
@@ -393,6 +396,23 @@ fn generate_yang_ops(
     emit!(w, 0, "}};")?;
 
     Ok(())
+}
+
+// Returns true if the generated struct for this schema node requires a
+// lifetime parameter (i.e. it contains leaf-list fields or non-builtin leaf
+// types that map to borrowed Rust types).
+pub(crate) fn snode_needs_lifetime(snode: &SchemaNode<'_>) -> bool {
+    let mut fields = Vec::new();
+    for child in snode.children() {
+        struct_builder::StructBuilder::extract_fields(child, &mut fields);
+    }
+    snode.is_within_notification()
+        || fields.iter().any(|snode| {
+            snode.kind() == SchemaNodeKind::LeafList
+                || !snode
+                    .leaf_type()
+                    .is_some_and(|leaf_type| leaf_type.is_builtin())
+        })
 }
 
 fn write_out_dir_file(filename: &str, output: &str) {

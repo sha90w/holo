@@ -64,23 +64,15 @@ impl<'a> StructBuilder<'a> {
     }
 
     pub(crate) fn generate(self, w: &mut CodeWriter) -> std::fmt::Result {
-        let (lifetime, anon_lifetime) = if self.needs_lifetime() {
-            ("<'a>", "<'_>")
-        } else {
-            ("", "")
-        };
+        let (lifetime, anon_lifetime) =
+            if crate::yang_codegen::snode_needs_lifetime(&self.snode) {
+                ("<'a>", "<'_>")
+            } else {
+                ("", "")
+            };
         self.generate_struct_def(w, lifetime)?;
         self.generate_yang_object_impl(w, anon_lifetime)?;
         Ok(())
-    }
-
-    // Returns true if the generated struct needs a lifetime parameter.
-    fn needs_lifetime(&self) -> bool {
-        self.snode.is_within_notification()
-            || self.fields.iter().any(|snode| {
-                snode.kind() == SchemaNodeKind::LeafList
-                    || !snode.leaf_type().is_some_and(|t| t.is_builtin())
-            })
     }
 
     // Returns the Rust type string for a struct field node.
