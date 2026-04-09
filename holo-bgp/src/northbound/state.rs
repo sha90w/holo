@@ -14,7 +14,7 @@ use holo_utils::bgp::AfiSafi;
 use holo_utils::option::OptionExt;
 use holo_yang::ToYang;
 use ipnetwork::{Ipv4Network, Ipv6Network};
-use prefix_trie::PrefixMap;
+use im::OrdMap;
 
 use crate::instance::Instance;
 use crate::neighbor::{Neighbor, fsm};
@@ -176,7 +176,7 @@ impl<'a> YangContainer<'a, Instance> for bgp::neighbors::neighbor::afi_safis::af
     fn new(instance: &'a Instance, list_entry: &ListEntry<'a>) -> Option<Self> {
         let (nbr, afi_safi) = list_entry.as_neighbor_afi_safi().unwrap();
         let rib = &instance.state.as_ref()?.rib;
-        fn count_stats<K>(prefixes: &PrefixMap<K, Destination>, addr: &IpAddr) -> (u32, u32, u32) {
+        fn count_stats<K: Clone + Ord>(prefixes: &OrdMap<K, Destination>, addr: &IpAddr) -> (u32, u32, u32) {
             prefixes
                 .values()
                 .filter_map(|dest| dest.adj_rib.get(addr))

@@ -1683,19 +1683,26 @@ where
     A: crate::af::AddressFamily,
 {
     let table = A::table(&mut instance.state.rib.tables);
-    for (prefix, dest) in table.prefixes.iter_mut() {
-        let Some(route) = &dest.redistribute else {
-            continue;
-        };
-        if route.origin != RouteOrigin::Protocol(protocol) {
+    let prefixes: Vec<_> = table.prefixes.keys().cloned().collect();
+    for prefix in prefixes {
+        let dominated = table
+            .prefixes
+            .get(&prefix)
+            .and_then(|dest| dest.redistribute.as_ref())
+            .is_some_and(|route| {
+                route.origin == RouteOrigin::Protocol(protocol)
+            });
+        if !dominated {
             continue;
         }
 
         // Remove redistributed route.
-        dest.redistribute = None;
+        if let Some(dest) = table.prefixes.get_mut(&prefix) {
+            dest.redistribute = None;
+        }
 
         // Enqueue prefix for the BGP Decision Process.
-        table.queued_prefixes.insert(*prefix);
+        table.queued_prefixes.insert(prefix);
     }
 
     // Schedule the BGP Decision Process.
