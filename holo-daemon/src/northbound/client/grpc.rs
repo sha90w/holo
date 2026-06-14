@@ -15,7 +15,7 @@ use holo_utils::task::Task;
 use holo_yang::{YANG_CTX, YANG_FEATURES};
 use tokio::sync::mpsc::Sender;
 use tokio::sync::{mpsc, oneshot};
-use tokio_stream::wrappers::UnboundedReceiverStream;
+use tokio_stream::wrappers::{ReceiverStream, UnboundedReceiverStream};
 use tonic::transport::{Server, ServerTlsConfig};
 use tonic::{Request, Response, Status};
 use tracing::{error, trace, trace_span};
@@ -154,10 +154,14 @@ impl proto::Northbound for NorthboundService {
         Ok(Response::new(grpc_response))
     }
 
+    type GetStateStream = Pin<
+        Box<dyn Stream<Item = Result<proto::GetStateResponse, Status>> + Send>,
+    >;
+
     async fn get_state(
         &self,
         grpc_request: Request<proto::GetStateRequest>,
-    ) -> Result<Response<proto::GetStateResponse>, Status> {
+    ) -> Result<Response<Self::GetStateStream>, Status> {
         let grpc_request = grpc_request.into_inner();
         trace_span!("northbound").in_scope(|| {
             trace_span!("client", name = "grpc").in_scope(|| {
@@ -165,35 +169,38 @@ impl proto::Northbound for NorthboundService {
             });
         });
 
-        // Create oneshot channel to receive response back from the northbound.
-        let (responder_tx, responder_rx) = oneshot::channel();
-
-        // Convert and relay gRPC request to the northbound.
+        // Parse request parameters.
         let encoding = proto::Encoding::try_from(grpc_request.encoding)
             .map_err(|_| Status::invalid_argument("Invalid data encoding"))?;
         let with_defaults = grpc_request.with_defaults;
         let path = grpc_request.path.map(Path::from);
+
+        // Create the fragment channel and relay the request to the northbound.
+        let (tx, rx) = mpsc::channel(4);
         let nb_request =
             api::client::Request::GetState(api::client::GetStateRequest {
                 path,
-                responder: responder_tx,
+                tx,
             });
         self.request_tx.send(nb_request).await.unwrap();
 
-        // Receive response from the northbound.
-        let nb_response = responder_rx.await.unwrap()?;
+        // Stream each fragment to the gRPC client, encoding it on the fly. A
+        // fragment error terminates the stream with a gRPC status.
+        let stream = ReceiverStream::new(rx);
+        let output = futures::StreamExt::map(stream, move |fragment| {
+            let dtree = fragment.map_err(northbound::Error::Get)?;
+            let mut printer_flags = DataPrinterFlags::WITH_SIBLINGS;
+            if with_defaults {
+                printer_flags.insert(DataPrinterFlags::WD_ALL);
+            }
+            let data = data_tree_init(&dtree, encoding, printer_flags)?;
+            Ok(proto::GetStateResponse {
+                timestamp: get_timestamp(),
+                data: Some(data),
+            })
+        });
 
-        // Convert and relay northbound response to the gRPC client.
-        let mut printer_flags = DataPrinterFlags::WITH_SIBLINGS;
-        if with_defaults {
-            printer_flags.insert(DataPrinterFlags::WD_ALL);
-        }
-        let data = data_tree_init(&nb_response.dtree, encoding, printer_flags)?;
-        let grpc_response = proto::GetStateResponse {
-            timestamp: get_timestamp(),
-            data: Some(data),
-        };
-        Ok(Response::new(grpc_response))
+        Ok(Response::new(Box::pin(output)))
     }
 
     async fn get_config(
@@ -517,8 +524,20 @@ impl From<northbound::Error> for Status {
             northbound::Error::TransactionIdNotFound(..) => {
                 Status::not_found(error.to_string())
             }
-            northbound::Error::Get(..) => {
-                Status::invalid_argument(error.to_string())
+            // Map the wrapped fragment error by its nature: genuine
+            // client-input problems are invalid_argument, everything else
+            // (channel closed, relays, internal YANG failures) is internal.
+            northbound::Error::Get(ref inner) => {
+                use holo_northbound::error::Error as NbError;
+                let message = error.to_string();
+                match inner {
+                    NbError::YangInvalidPath(..)
+                    | NbError::YangInvalidListKeys
+                    | NbError::YangInvalidData(..) => {
+                        Status::invalid_argument(message)
+                    }
+                    _ => Status::internal(message),
+                }
             }
         }
     }

@@ -9,7 +9,7 @@ use std::fmt::Write;
 
 use holo_utils::yang::SchemaNodeExt;
 use holo_yang::YANG_CTX;
-use tokio::sync::oneshot;
+use tokio::sync::mpsc::error::TrySendError;
 use yang5::data::{DataNodeRef, DataTree};
 use yang5::schema::{SchemaNode, SchemaNodeKind};
 
@@ -109,29 +109,85 @@ type YangListNewFn<P: Provider> =
     for<'a> fn(&'a P, &P::ListEntry<'a>) -> Option<Box<dyn YangObject + 'a>>;
 type YangContainerNewFn<P: Provider> =
     for<'a> fn(&'a P, &P::ListEntry<'a>) -> Option<Box<dyn YangObject + 'a>>;
-type GetReceiver = oneshot::Receiver<Result<api::daemon::GetResponse, Error>>;
 
 // ===== helper functions =====
+
+// Mutable context threaded through the data-tree traversal.
+struct GetContext<'a> {
+    // Channel response fragments are sent into.
+    tx: &'a api::daemon::FragmentSender,
+    // Number of cross-module relays issued so far. Used to decide whether a
+    // node carries data hosted by another provider and so must not be pruned.
+    relays: usize,
+}
+
+impl GetContext<'_> {
+    // Relays a Get request to the child task that owns `path`, handing it a
+    // clone of the fragment sender so its responses flow into the same stream.
+    fn relay_request(&mut self, nb_tx: NbDaemonSender, path: Path) {
+        let request = api::daemon::GetRequest {
+            path: Some(path),
+            tx: Some(self.tx.clone()),
+        };
+        tokio::task::spawn(async move {
+            let _ = nb_tx.send(api::daemon::Request::Get(request)).await;
+        });
+        self.relays += 1;
+    }
+}
+
+// Sends a single response fragment (data or terminal error), applying
+// backpressure when the channel is full.
+//
+// The instance task runs on a dedicated OS thread in production, so a
+// `blocking_send` on a full channel applies backpressure without stalling the
+// async runtime; under `feature = "testing"` the channel is sized so
+// `try_send` never reports `Full`. A closed channel means the client is gone,
+// so traversal bails out early.
+pub(crate) fn send_get_fragment(
+    tx: &api::daemon::FragmentSender,
+    fragment: api::daemon::GetFragment,
+) -> Result<(), Error> {
+    match tx.try_send(fragment) {
+        Ok(()) => Ok(()),
+        Err(TrySendError::Full(fragment)) => {
+            tx.blocking_send(fragment).map_err(|_| Error::GetChannelClosed)
+        }
+        Err(TrySendError::Closed(_)) => Err(Error::GetChannelClosed),
+    }
+}
+
+// Sends a non-empty data tree as a single response fragment. Empty trees are
+// skipped.
+fn send_fragment(
+    tx: &api::daemon::FragmentSender,
+    dtree: DataTree<'static>,
+) -> Result<(), Error> {
+    if dtree.reference().is_none() {
+        return Ok(());
+    }
+    send_get_fragment(tx, Ok(dtree))
+}
 
 fn iterate_node<'a, P>(
     provider: &'a P,
     dnode: &mut DataNodeRef<'_>,
     snode: &SchemaNode<'_>,
     list_entry: &P::ListEntry<'a>,
-    relay_list: &mut Vec<GetReceiver>,
+    ctx: &mut GetContext<'_>,
 ) -> Result<(), Error>
 where
     P: Provider,
 {
     match snode.kind() {
         SchemaNodeKind::List => {
-            iterate_list(provider, dnode, snode, list_entry, relay_list)?;
+            iterate_list(provider, dnode, snode, list_entry, ctx)?;
         }
         SchemaNodeKind::Container => {
-            iterate_container(provider, dnode, snode, list_entry, relay_list)?;
+            iterate_container(provider, dnode, snode, list_entry, ctx)?;
         }
         SchemaNodeKind::Choice | SchemaNodeKind::Case => {
-            iterate_children(provider, dnode, snode, list_entry, relay_list)?;
+            iterate_children(provider, dnode, snode, list_entry, ctx)?;
         }
         _ => (),
     }
@@ -144,7 +200,7 @@ fn iterate_list<'a, P>(
     dnode: &mut DataNodeRef<'_>,
     snode: &SchemaNode<'_>,
     parent_list_entry: &P::ListEntry<'a>,
-    relay_list: &mut Vec<GetReceiver>,
+    ctx: &mut GetContext<'_>,
 ) -> Result<(), Error>
 where
     P: Provider,
@@ -170,13 +226,7 @@ where
             obj.into_data_node(&mut dnode);
 
             // Iterate over child nodes.
-            iterate_children(
-                provider,
-                &mut dnode,
-                snode,
-                &list_entry,
-                relay_list,
-            )?;
+            iterate_children(provider, &mut dnode, snode, &list_entry, ctx)?;
         }
     }
 
@@ -188,7 +238,7 @@ fn iterate_container<'a, P>(
     dnode: &mut DataNodeRef<'_>,
     snode: &SchemaNode<'_>,
     list_entry: &P::ListEntry<'a>,
-    relay_list: &mut Vec<GetReceiver>,
+    ctx: &mut GetContext<'_>,
 ) -> Result<(), Error>
 where
     P: Provider,
@@ -205,7 +255,7 @@ where
         obj.into_data_node(&mut child);
     }
 
-    iterate_children(provider, &mut child, snode, list_entry, relay_list)?;
+    iterate_children(provider, &mut child, snode, list_entry, ctx)?;
 
     // Remove empty containers that produced no children.
     if child.children().next().is_none() {
@@ -220,7 +270,7 @@ fn iterate_children<'a, P>(
     dnode: &mut DataNodeRef<'_>,
     snode: &SchemaNode<'_>,
     list_entry: &P::ListEntry<'a>,
-    relay_list: &mut Vec<GetReceiver>,
+    ctx: &mut GetContext<'_>,
 ) -> Result<(), Error>
 where
     P: Provider,
@@ -242,27 +292,14 @@ where
                 name: format!("{}:{}", module.name(), snode.name()),
                 keys: HashMap::new(),
             });
-            let relay_rx = relay_request(child_nb_tx, path);
-            relay_list.push(relay_rx);
+            ctx.relay_request(child_nb_tx, path);
             continue;
         }
 
-        iterate_node(provider, dnode, &snode, list_entry, relay_list)?;
+        iterate_node(provider, dnode, &snode, list_entry, ctx)?;
     }
 
     Ok(())
-}
-
-fn relay_request(nb_tx: NbDaemonSender, path: Path) -> GetReceiver {
-    let (responder_tx, responder_rx) = oneshot::channel();
-    let request = api::daemon::GetRequest {
-        path: Some(path),
-        responder: Some(responder_tx),
-    };
-    tokio::task::spawn(async move {
-        let _ = nb_tx.send(api::daemon::Request::Get(request)).await;
-    });
-    responder_rx
 }
 
 // Resolves each path element to its schema node, validating key names.
@@ -303,7 +340,7 @@ fn expand_path<'a, P>(
     parent_dnode: &mut DataNodeRef<'_>,
     remaining: &[ResolvedPathElem<'_>],
     list_entry: P::ListEntry<'a>,
-    relay_list: &mut Vec<GetReceiver>,
+    ctx: &mut GetContext<'_>,
 ) -> Result<(), Error>
 where
     P: Provider,
@@ -317,8 +354,7 @@ where
         let module = snode.module();
         if let Some(child_nb_tx) = list_entry.child_task(module.name()) {
             let path = Path::from_dnode(parent_dnode);
-            let relay_rx = relay_request(child_nb_tx, path);
-            relay_list.push(relay_rx);
+            ctx.relay_request(child_nb_tx, path);
         } else {
             if snode.kind() == SchemaNodeKind::Container {
                 let snode_path = snode.data_path();
@@ -330,13 +366,7 @@ where
                     obj.into_data_node(parent_dnode);
                 }
             }
-            iterate_children(
-                provider,
-                parent_dnode,
-                &snode,
-                &list_entry,
-                relay_list,
-            )?;
+            iterate_children(provider, parent_dnode, &snode, &list_entry, ctx)?;
         }
         return Ok(());
     };
@@ -349,8 +379,7 @@ where
     if let Some(child_nb_tx) = list_entry.child_task(module.name()) {
         let mut path = Path::from_dnode(parent_dnode);
         path.elems.extend(remaining.iter().map(|r| r.elem.clone()));
-        let relay_rx = relay_request(child_nb_tx, path);
-        relay_list.push(relay_rx);
+        ctx.relay_request(child_nb_tx, path);
         return Ok(());
     }
 
@@ -391,11 +420,11 @@ where
                         obj.into_data_node(&mut child);
                     }
 
-                    let relay_count = relay_list.len();
-                    expand_path(provider, &mut child, rest, entry, relay_list)?;
+                    let relay_count = ctx.relays;
+                    expand_path(provider, &mut child, rest, entry, ctx)?;
 
                     // Prune entries with only keys and no actual data.
-                    if relay_list.len() == relay_count
+                    if ctx.relays == relay_count
                         && child.children().count() <= snode.list_keys().count()
                     {
                         child.remove();
@@ -410,16 +439,16 @@ where
                     .new_list2(Some(&module), snode.name(), &key_values)
                     .map_err(Error::YangInvalidPath)?;
 
-                let relay_count = relay_list.len();
+                let relay_count = ctx.relays;
                 expand_path(
                     provider,
                     &mut child,
                     rest,
                     Default::default(),
-                    relay_list,
+                    ctx,
                 )?;
 
-                if relay_list.len() == relay_count
+                if ctx.relays == relay_count
                     && child.children().count() <= snode.list_keys().count()
                 {
                     child.remove();
@@ -442,7 +471,7 @@ where
                 }
             }
 
-            expand_path(provider, &mut child, rest, list_entry, relay_list)?;
+            expand_path(provider, &mut child, rest, list_entry, ctx)?;
 
             if child.children().next().is_none() {
                 child.remove();
@@ -459,13 +488,14 @@ where
 pub(crate) fn process_get<P>(
     provider: &P,
     path: Option<Path>,
-) -> Result<api::daemon::GetResponse, Error>
+    tx: &api::daemon::FragmentSender,
+) -> Result<(), Error>
 where
     P: Provider,
 {
     let yang_ctx = YANG_CTX.get().unwrap();
     let mut dtree = DataTree::new(yang_ctx);
-    let mut relay_list = vec![];
+    let mut ctx = GetContext { tx, relays: 0 };
 
     let path = path
         .filter(|path| !path.elems.is_empty())
@@ -483,21 +513,10 @@ where
         &mut dnode,
         &resolved[1..],
         Default::default(),
-        &mut relay_list,
+        &mut ctx,
     )?;
 
-    // Merge responses from child tasks.
-    for relay_rx in relay_list {
-        // Skip data from instances that are no longer running.
-        let Ok(response) = relay_rx.blocking_recv() else {
-            Error::RelayUnreachable.log();
-            continue;
-        };
-        let response = response?;
-        dtree
-            .merge(&response.data)
-            .map_err(Error::YangInvalidData)?;
-    }
-
-    Ok(api::daemon::GetResponse { data: dtree })
+    // Send the locally-built tree as a single fragment. Relayed child tasks
+    // send their own fragments directly into the same stream.
+    send_fragment(tx, dtree)
 }

@@ -10,7 +10,7 @@ use holo_northbound::{Path, PathElem};
 use holo_utils::task::Task;
 use holo_yang::YANG_CTX;
 use itertools::join;
-use tokio::sync::mpsc::Sender;
+use tokio::sync::mpsc::{self, Sender};
 use tokio::sync::oneshot;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::transport::{Server, ServerTlsConfig};
@@ -20,7 +20,7 @@ use yang5::data::{Data, DataFormat, DataPrinterFlags, DataTree};
 use yang5::schema::SchemaNodeKind;
 
 use crate::config;
-use crate::northbound::client::api;
+use crate::northbound::{self, client::api};
 
 const GNMI_VERSION: &str = "0.8.1";
 
@@ -391,20 +391,28 @@ impl GNmiService {
         &self,
         path: Option<Path>,
     ) -> Result<DataTree<'static>, Status> {
-        // Create oneshot channel to receive response back from the northbound.
-        let (responder_tx, responder_rx) = oneshot::channel();
+        let yang_ctx = YANG_CTX.get().unwrap();
 
-        // Send request to the northbound.
-        let nb_request = api::client::GetStateRequest {
-            path,
-            responder: responder_tx,
-        };
-        let nb_request = api::client::Request::GetState(nb_request);
+        // Create the fragment channel and relay the request to the northbound.
+        let (tx, mut rx) = mpsc::channel(4);
+        let nb_request =
+            api::client::Request::GetState(api::client::GetStateRequest {
+                path,
+                tx,
+            });
         self.request_tx.send(nb_request).await.unwrap();
 
-        // Receive response from the northbound.
-        let nb_response = responder_rx.await.unwrap()?;
-        Ok(nb_response.dtree)
+        // Merge all response fragments into a single data tree (gNMI Get is
+        // unary by spec).
+        let mut dtree = DataTree::new(yang_ctx);
+        while let Some(fragment) = rx.recv().await {
+            let subtree = fragment.map_err(northbound::Error::Get)?;
+            dtree
+                .merge(&subtree)
+                .map_err(|error| Status::internal(error.to_string()))?;
+        }
+
+        Ok(dtree)
     }
 
     async fn get_config(

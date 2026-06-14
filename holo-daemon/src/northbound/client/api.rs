@@ -5,6 +5,7 @@
 //
 
 use holo_northbound::Path;
+use holo_northbound::api::daemon::FragmentSender;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::oneshot::Sender as Responder;
 use yang5::data::{DataDiff, DataTree};
@@ -43,12 +44,9 @@ pub mod client {
     #[derive(Debug)]
     pub struct GetStateRequest {
         pub path: Option<Path>,
-        pub responder: Responder<Result<GetStateResponse>>,
-    }
-
-    #[derive(Debug)]
-    pub struct GetStateResponse {
-        pub dtree: DataTree<'static>,
+        // Channel response fragments are streamed into. Provider tasks receive
+        // clones of this sender and write directly into the client's stream.
+        pub tx: FragmentSender,
     }
 
     #[derive(Debug)]

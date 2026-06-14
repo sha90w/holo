@@ -179,9 +179,7 @@ impl Northbound {
 
         match request {
             capi::client::Request::GetState(request) => {
-                let response =
-                    self.process_client_get_state(request.path).await;
-                let _ = request.responder.send(response);
+                self.process_client_get_state(request.path, request.tx).await;
             }
             capi::client::Request::GetConfig(request) => {
                 let response = self.process_client_get_config(request.path);
@@ -235,12 +233,17 @@ impl Northbound {
     }
 
     // Processes a `GetState` message received from an external client.
+    //
+    // The state data is streamed back as independent fragments through `tx`:
+    // each provider (and any instance it relays to) writes its own subtree
+    // directly into the channel. The stream ends once every sender clone has
+    // been dropped.
     async fn process_client_get_state(
         &self,
         path: Option<Path>,
-    ) -> Result<capi::client::GetStateResponse> {
-        let dtree = self.get_state(path.as_ref()).await?;
-        Ok(capi::client::GetStateResponse { dtree })
+        tx: papi::daemon::FragmentSender,
+    ) {
+        self.get_state(path.as_ref(), &tx).await;
     }
 
     // Processes a `GetConfig` message received from an external client.
@@ -564,33 +567,25 @@ impl Northbound {
         }
     }
 
-    // Gets dynamically generated operational data for the provided path. The
-    // request might span multiple data providers.
+    // Requests dynamically generated operational data for the provided path.
+    // The request might span multiple data providers.
+    //
+    // Each provider (and any instance it relays to) receives a clone of the
+    // fragment sender and streams its own subtree directly to the client; the
+    // core neither awaits nor merges the responses.
     async fn get_state(
         &self,
         path: Option<&Path>,
-    ) -> Result<DataTree<'static>> {
-        let yang_ctx = YANG_CTX.get().unwrap();
-        let mut dtree = DataTree::new(yang_ctx);
-
+        tx: &papi::daemon::FragmentSender,
+    ) {
         for daemon_tx in self.providers.iter() {
-            // Prepare request.
-            let (responder_tx, responder_rx) = oneshot::channel();
             let request =
                 papi::daemon::Request::Get(papi::daemon::GetRequest {
                     path: path.cloned(),
-                    responder: Some(responder_tx),
+                    tx: Some(tx.clone()),
                 });
             daemon_tx.send(request).await.unwrap();
-
-            // Receive response.
-            let response = responder_rx.await.unwrap().map_err(Error::Get)?;
-
-            // Combine all responses into a single data tree.
-            dtree.merge(&response.data).map_err(Error::YangInternal)?;
         }
-
-        Ok(dtree)
     }
 
     // Invoke a YANG RPC or Action.

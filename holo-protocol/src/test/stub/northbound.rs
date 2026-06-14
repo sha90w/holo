@@ -7,9 +7,9 @@
 use std::sync::Arc;
 
 use holo_northbound::configuration::{self, CommitPhase, ConfigChanges};
-use holo_northbound::{NbDaemonSender, api};
+use holo_northbound::{NbDaemonSender, Path, api};
 use holo_yang::YANG_CTX;
-use tokio::sync::oneshot;
+use tokio::sync::{mpsc, oneshot};
 use yang5::data::{
     Data, DataDiff, DataDiffFlags, DataFormat, DataOperation, DataParserFlags,
     DataPrinterFlags, DataTree, DataValidationFlags,
@@ -118,28 +118,36 @@ impl NorthboundStub {
     }
 
     pub(crate) async fn init_state_cache(&mut self) {
-        let state = self.get_state().await;
+        let state = self.get_state(None).await;
         self.state_cache = Some(state);
     }
 
-    async fn get_state(&self) -> DataTree<'static> {
-        // Prepare request.
-        let (responder_tx, responder_rx) = oneshot::channel();
+    async fn get_state(&self, path: Option<Path>) -> DataTree<'static> {
+        let yang_ctx = YANG_CTX.get().unwrap();
+
+        // Create a large-capacity fragment channel. Under the cooperative
+        // testing scheduler the instance task never yields during process_get,
+        // so this collector cannot drain concurrently; the capacity must hold
+        // every fragment so the blocking_send fallback is never hit.
+        let (tx, mut rx) = mpsc::channel(65536);
         let request = api::daemon::Request::Get(api::daemon::GetRequest {
-            path: None,
-            responder: Some(responder_tx),
+            path,
+            tx: Some(tx),
         });
 
-        // Send the request and receive the response.
+        // Send the request and merge the streamed fragments into one tree.
         self.daemon_tx
             .send(request)
             .await
             .expect("Failed to send Get request");
-        let response = responder_rx
-            .await
-            .expect("Failed to receive Get response")
-            .expect("Received invalid state data");
-        response.data
+        let mut dtree = DataTree::new(yang_ctx);
+        while let Some(fragment) = rx.recv().await {
+            let subtree = fragment.expect("Received invalid state data");
+            dtree
+                .merge(&subtree)
+                .expect("Failed to merge state fragment");
+        }
+        dtree
     }
 
     pub(crate) async fn assert_state(
@@ -150,7 +158,7 @@ impl NorthboundStub {
         let yang_ctx = YANG_CTX.get().unwrap();
 
         // Get actual output.
-        let actual = self.get_state().await;
+        let actual = self.get_state(None).await;
 
         // Update or verify output.
         if *UPDATE_OUTPUTS {

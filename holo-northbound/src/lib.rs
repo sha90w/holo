@@ -249,9 +249,17 @@ pub fn process_northbound_msg<Provider>(
             }
         }
         api::daemon::Request::Get(request) => {
-            let response = state::process_get(provider, request.path);
-            if let Some(responder) = request.responder {
-                responder.send(response).unwrap();
+            // Skip requests with no sender: these come from deserialized
+            // event-recorder replay and have nowhere to send fragments.
+            if let Some(tx) = request.tx {
+                if let Err(error) =
+                    state::process_get(provider, request.path, &tx)
+                {
+                    // Forward the error as a terminal fragment, applying
+                    // backpressure if the channel is full so the error is not
+                    // lost; a failure here means the client is already gone.
+                    let _ = state::send_get_fragment(&tx, Err(error));
+                }
             }
         }
         api::daemon::Request::Rpc(request) => {

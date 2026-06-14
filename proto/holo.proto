@@ -33,7 +33,15 @@ service Northbound {
   rpc GetSchema(GetSchemaRequest) returns (GetSchemaResponse) {}
 
   // Retrieve state data from the target.
-  rpc GetState(GetStateRequest) returns (GetStateResponse) {}
+  //
+  // This RPC is server-streaming: the state data is delivered as a sequence of
+  // independent messages ("fragments"). Each message is a complete,
+  // self-contained YANG document carrying its full ancestor spine (containers,
+  // list names, and keys) down to the data it holds. Messages may arrive in
+  // arbitrary order and number; a client wanting the full result merges them
+  // (e.g. via libyang merge), holding at most one fragment in memory at a time.
+  // Concatenating the encoded payloads is NOT a valid single document.
+  rpc GetState(GetStateRequest) returns (stream GetStateResponse) {}
 
   // Retrieve configuration data from the target.
   rpc GetConfig(GetConfigRequest) returns (GetConfigResponse) {}
@@ -126,6 +134,9 @@ message GetStateResponse {
   // Return values:
   // - grpc::StatusCode::OK: Success.
   // - grpc::StatusCode::INVALID_ARGUMENT: Invalid YANG data path.
+
+  // A single self-contained fragment of the requested data. See the GetState()
+  // RPC documentation for the fragment contract.
 
   // Timestamp in nanoseconds since Epoch.
   int64 timestamp = 1;

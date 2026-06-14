@@ -17,9 +17,11 @@ pub enum Error {
     RpcRelay(RpcError),
     RpcCallback(RpcError),
     RelayUnreachable,
+    GetChannelClosed,
     YangInvalidPath(yang5::Error),
     YangInvalidListKeys,
     YangInvalidData(yang5::Error),
+    YangInternal(yang5::Error),
 }
 
 // ===== impl Error =====
@@ -41,11 +43,15 @@ impl Error {
                 warn!(%error, "{}", self);
             }
             Error::RelayUnreachable => warn!("{}", self),
+            Error::GetChannelClosed => warn!("{}", self),
             Error::YangInvalidPath(error) => {
                 warn!(%error, "{}", self);
             }
             Error::YangInvalidListKeys => warn!("{}", self),
             Error::YangInvalidData(error) => {
+                warn!(%error, "{}", self);
+            }
+            Error::YangInternal(error) => {
                 warn!(%error, "{}", self);
             }
         }
@@ -74,6 +80,12 @@ impl std::fmt::Display for Error {
                     "failed to relay request: the target instance is no longer running"
                 )
             }
+            Error::GetChannelClosed => {
+                write!(
+                    f,
+                    "failed to send Get response fragment: the client has disconnected"
+                )
+            }
             Error::YangInvalidPath(..) => {
                 write!(f, "Invalid YANG data path")
             }
@@ -82,6 +94,9 @@ impl std::fmt::Display for Error {
             }
             Error::YangInvalidData(..) => {
                 write!(f, "Invalid YANG instance data")
+            }
+            Error::YangInternal(..) => {
+                write!(f, "Internal YANG error")
             }
         }
     }

@@ -8,6 +8,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
+use tokio::sync::mpsc;
 use tokio::sync::oneshot::Sender as Responder;
 use yang5::data::DataTree;
 
@@ -18,6 +19,13 @@ use crate::error::Error;
 // Daemon -> Provider requests.
 pub mod daemon {
     use super::*;
+
+    // A single fragment of a `Get` response: a self-contained data tree, or an
+    // error that aborts the stream. Defined once here and reused by both the
+    // provider and daemon-client API layers so provider sender clones feed the
+    // same channel end-to-end.
+    pub type GetFragment = Result<DataTree<'static>, Error>;
+    pub type FragmentSender = mpsc::Sender<GetFragment>;
 
     #[derive(Debug, Deserialize, Serialize)]
     pub enum Request {
@@ -60,13 +68,11 @@ pub mod daemon {
     #[derive(Debug, Deserialize, Serialize)]
     pub struct GetRequest {
         pub path: Option<Path>,
+        // Channel the provider sends response fragments into. `None` only when
+        // the request was produced by deserializing a recorded event, in which
+        // case the request is skipped.
         #[serde(skip)]
-        pub responder: Option<Responder<Result<GetResponse, Error>>>,
-    }
-
-    #[derive(Debug)]
-    pub struct GetResponse {
-        pub data: DataTree<'static>,
+        pub tx: Option<FragmentSender>,
     }
 
     #[derive(Debug, Deserialize, Serialize)]
